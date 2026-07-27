@@ -1318,7 +1318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 窗口状态 - 可见: \(window.isVisible), 关键窗口: \(window.isKeyWindow)
         
-        if window.isVisible && window.isKeyWindow {
+        // 可见即视为已显示。窗口失去焦点时再次按快捷键也应隐藏，
+        // 不能因为它不是 key window 而重复执行显示动画。
+        if window.isVisible {
             windowManager?.hideWindow()
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -1387,8 +1389,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         guard let window = mainWindow else {
             return false
         }
-        // 使用与toggleWindow相同的逻辑：窗口必须既可见又是关键窗口
-        return window.isVisible && window.isKeyWindow
+        // 使用与 toggleWindow 相同的逻辑：可见即为显示状态，是否获得焦点不影响切换。
+        return window.isVisible
     }
     
     // MARK: - 搜索框激活
