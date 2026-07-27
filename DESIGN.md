@@ -15,3 +15,12 @@
 - Direct paste restores the previously active application before sending the paste command. Without macOS Accessibility permission, it safely falls back to copy and reports the permission requirement.
 - Favorite, copy, paste, search, and delete actions live in the native macOS context menu so they inherit the system Liquid Glass treatment and accessibility behavior.
 - The context menu orders the default paste action first, copy second, then organizational and destructive actions separated into clear groups.
+
+## Accessibility onboarding
+
+- Authorization uses one compact Liquid Glass guide instead of a text-heavy blocking alert.
+- The guide demonstrates moving the OneClip icon into macOS Accessibility settings and also mentions the system `+` control.
+- “Open System Settings” is the only emphasized action; defer and disable-reminder actions remain visually secondary.
+- Permission state is detected automatically and transitions inline to a brief success state without opening another alert.
+- Motion is subtle, runs only while permission is missing, and respects Reduce Motion.
+- Permission copy explains the actual benefit—pasting at the current insertion point—and avoids implying that clipboard history requires this permission.

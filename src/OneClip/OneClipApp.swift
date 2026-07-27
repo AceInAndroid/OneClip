@@ -20,6 +20,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var wasAccessibilityDenied = false
     private var cancellables = Set<AnyCancellable>()
     private var windowManager: WindowManager? // 添加windowManager引用
+    private var permissionGuideWindow: NSWindow?
+    private var permissionGuideCloseObserver: NSObjectProtocol?
+    private var permissionGuideCompletionWorkItem: DispatchWorkItem?
     
     var mainWindow: NSWindow?
     
@@ -40,7 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 初始化通知系统
         setupNotificationSystem()
-        
+
         // 监听设置变化
         setupSettingsObservers()
         
@@ -2601,7 +2604,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 全局弹窗状态检查
         if AppDelegate.isPermissionDialogShowing {
-            print("[DEBUG] 权限弹窗正在显示中，跳过重复弹窗")
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                self.permissionGuideWindow?.makeKeyAndOrderFront(nil)
+            }
+            print("[DEBUG] 权限引导正在显示中，已将窗口带到前台")
             return
         }
         
@@ -2655,84 +2662,79 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             AppDelegate.isPermissionDialogShowing = true
             AppDelegate.lastPermissionDialogTime = Date()
             
-            print("[DEBUG] 开始创建权限弹窗")
-            // 暂时停止全局点击监听，避免弹窗期间的误操作
+            print("[DEBUG] 开始创建权限引导窗口")
             NotificationCenter.default.post(name: NSNotification.Name("PreventAutoHide"), object: true)
-            
-            let alert = NSAlert()
-            
-            if isFirstLaunch {
-                // 首次启动的友好提示
-                alert.messageText = "欢迎使用 OneClip！"
-                alert.informativeText = """
-                感谢您选择 OneClip 剪贴板管理器！
-                
-                为了让您体验完整功能，我们需要申请辅助功能权限：
-                
-                基本功能：菜单栏图标和剪贴板管理已可正常使用
-                全局快捷键 (Cmd+Ctrl+V) 需要此权限
-                
-                权限用途：仅用于注册全局快捷键，不会访问任何敏感信息
-                授权步骤：系统设置 → 隐私与安全性 → 辅助功能 → 添加 OneClip
-                """
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "立即授权")
-                alert.addButton(withTitle: "稍后设置")
-                alert.addButton(withTitle: "跳过（不使用快捷键）")
-            } else {
-                // 非首次启动的标准提示
-                alert.messageText = "全局快捷键功能需要权限"
-                alert.informativeText = """
-                OneClip 需要辅助功能权限才能使用全局快捷键 (Cmd+Ctrl+V)。
-                
-                • 基本功能正常：菜单栏图标和剪贴板管理不受影响
-                • 如需使用全局快捷键，请点击"授权"打开系统设置
-                
-                授权步骤：系统设置 → 隐私与安全性 → 辅助功能 → 添加 OneClip
-                """
-                alert.alertStyle = .informational
-                alert.addButton(withTitle: "授权")
-                alert.addButton(withTitle: "稍后")
-                alert.addButton(withTitle: "不再提示")
-            }
-            
-            print("[DEBUG] 权限弹窗已创建，等待用户响应")
-            let response = alert.runModal()
-            print("[DEBUG] 用户响应: \(response.rawValue)")
-            
-            // 恢复全局点击监听
-            // 延迟恢复，确保弹窗完全关闭
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NotificationCenter.default.post(name: NSNotification.Name("PreventAutoHide"), object: false)
-            }
-            
-            // 重置全局弹窗状态
-            AppDelegate.isPermissionDialogShowing = false
-            
-            // 弹窗处理完成
-            print("[DEBUG] 开始处理用户选择")
-            switch response {
-            case .alertFirstButtonReturn:
-                // 授权按钮 - 启动权限监控等待用户授权
-                // 用户点击授权按钮，启动权限监控
-                self.wasAccessibilityDenied = true
-                self.startPermissionMonitoring()
-                self.openAccessibilitySettings()
-            case .alertThirdButtonReturn:
-                if isFirstLaunch {
-                    // 首次启动：跳过按钮，用更温和的方式处理
-                    // 用户选择跳过快捷键功能（首次启动）
-                    // 不设置"不再提示"，让用户以后可以在设置中重新启用
-                } else {
-                    // 非首次启动：不再提示按钮
+
+            let guideView = AccessibilityPermissionGuideView(
+                isFirstLaunch: isFirstLaunch,
+                onOpenSettings: { [weak self] in
+                    self?.wasAccessibilityDenied = true
+                    self?.startPermissionMonitoring()
+                    self?.openAccessibilitySettings()
+                },
+                onLater: { [weak self] in
+                    self?.permissionGuideWindow?.close()
+                },
+                onDisablePrompt: isFirstLaunch ? nil : { [weak self] in
                     UserDefaults.standard.set(true, forKey: "DisableAccessibilityPrompt")
-                    // 用户选择不再提示辅助功能权限
+                    self?.permissionGuideWindow?.close()
                 }
-            default:
-                // 稍后按钮或关闭
-                // 用户选择稍后设置辅助功能权限
-                break
+            )
+
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
+                styleMask: [.titled, .closable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "OneClip 辅助功能授权"
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.backgroundColor = .clear
+            window.isOpaque = false
+            window.isMovableByWindowBackground = true
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.contentView = NSHostingView(rootView: guideView)
+            window.center()
+
+            self.permissionGuideWindow = window
+            self.permissionGuideCloseObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.permissionGuideDidClose()
             }
+
+            self.wasAccessibilityDenied = true
+            self.startPermissionMonitoring()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            print("[DEBUG] 权限引导窗口已显示")
+        }
+    }
+
+    private func permissionGuideDidClose() {
+        if let observer = permissionGuideCloseObserver {
+            NotificationCenter.default.removeObserver(observer)
+            permissionGuideCloseObserver = nil
+        }
+        permissionGuideCompletionWorkItem?.cancel()
+        permissionGuideCompletionWorkItem = nil
+        permissionGuideWindow = nil
+        AppDelegate.isPermissionDialogShowing = false
+
+        if !AccessibilityPermissionManager.shared.hasPermission {
+            wasAccessibilityDenied = false
+            stopPermissionMonitoring()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NotificationCenter.default.post(name: NSNotification.Name("PreventAutoHide"), object: false)
         }
     }
     
@@ -2851,24 +2853,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     private func showPermissionGrantedAlert() {
         DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = "辅助功能权限授权成功！"
-            alert.informativeText = """
-            太棒了！现在您可以使用全局快捷键功能了：
-            
-            • Cmd+Ctrl+V：显示/隐藏 OneClip 窗口
-            
-            全局快捷键已激活，请尝试使用吧！
-            """
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "好的")
-            
-            // 直接设置窗口级别
-            alert.window.level = .floating
-            
-            let _ = alert.runModal()
-            
-            // 已显示权限授权成功提示
+            guard let window = self.permissionGuideWindow else { return }
+            window.orderFrontRegardless()
+
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.permissionGuideWindow?.close()
+            }
+            self.permissionGuideCompletionWorkItem?.cancel()
+            self.permissionGuideCompletionWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: workItem)
         }
     }
     
@@ -3089,6 +3082,257 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if statusBarRetryCount < maxStatusBarRetries {
             createStatusBarItem()
         }
+    }
+}
+
+// MARK: - Accessibility Permission Guide
+
+private struct AccessibilityPermissionGuideView: View {
+    @ObservedObject private var permissionManager = AccessibilityPermissionManager.shared
+    let isFirstLaunch: Bool
+    let onOpenSettings: () -> Void
+    let onLater: () -> Void
+    let onDisablePrompt: (() -> Void)?
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+
+            RadialGradient(
+                colors: [Color.accentColor.opacity(0.17), .clear],
+                center: .top,
+                startRadius: 10,
+                endRadius: 360
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                statusHeader
+                    .padding(.top, 32)
+
+                if permissionManager.hasPermission {
+                    permissionGrantedContent
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
+                } else {
+                    permissionGuideContent
+                        .transition(.opacity)
+                }
+            }
+            .padding(.horizontal, 34)
+        }
+        .frame(width: 520, height: 480)
+        .animation(.easeOut(duration: 0.25), value: permissionManager.hasPermission)
+    }
+
+    private var statusHeader: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(permissionManager.hasPermission ? Color.green : Color.orange)
+                .frame(width: 7, height: 7)
+                .shadow(
+                    color: (permissionManager.hasPermission ? Color.green : Color.orange).opacity(0.5),
+                    radius: 4
+                )
+
+            Text(permissionManager.hasPermission ? "已完成" : "还差一步")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(.thinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+    }
+
+    private var permissionGuideContent: some View {
+        VStack(spacing: 0) {
+            Text(isFirstLaunch ? "让 OneClip 帮你直接粘贴" : "开启直接粘贴")
+                .font(.system(size: 25, weight: .bold, design: .rounded))
+                .padding(.top, 14)
+
+            Text("把 OneClip 加入“辅助功能”，点击历史记录即可粘贴到当前光标位置。")
+                .font(.system(size: 13.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .frame(maxWidth: 420)
+                .padding(.top, 8)
+
+            PermissionDragAnimation()
+                .padding(.top, 14)
+
+            Text("在系统设置中拖入 OneClip，或点击列表下方的 + 添加，然后打开开关。")
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 8)
+
+            HStack(spacing: 12) {
+                if let onDisablePrompt {
+                    Button("不再提醒", action: onDisablePrompt)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary.opacity(0.8))
+                }
+
+                Spacer()
+
+                Button("稍后", action: onLater)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+
+                Button(action: onOpenSettings) {
+                    Label("打开系统设置", systemImage: "arrow.up.forward.app")
+                        .frame(minWidth: 122)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 18)
+            .padding(.bottom, 26)
+        }
+    }
+
+    private var permissionGrantedContent: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.green.opacity(0.14))
+                    .frame(width: 116, height: 116)
+                Circle()
+                    .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                    .frame(width: 92, height: 92)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 40, weight: .bold))
+                    .foregroundStyle(.green)
+            }
+            .padding(.top, 52)
+
+            Text("授权完成")
+                .font(.system(size: 27, weight: .bold, design: .rounded))
+
+            Text("现在点击任意历史记录，就能直接粘贴到光标位置。")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+
+            Label("OneClip 已准备好", systemImage: "sparkles")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.accentColor.opacity(0.1), in: Capsule())
+                .padding(.top, 8)
+
+            Spacer()
+        }
+    }
+}
+
+private struct PermissionDragAnimation: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isAtDestination = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let sourceX: CGFloat = 72
+            let destinationX = geometry.size.width - 72
+            let itemX = reduceMotion ? destinationX : (isAtDestination ? destinationX : sourceX)
+
+            ZStack {
+                PermissionAnimationTile(
+                    title: "OneClip",
+                    symbol: "app.dashed",
+                    isHighlighted: false
+                )
+                .position(x: sourceX, y: 74)
+
+                PermissionAnimationTile(
+                    title: "辅助功能",
+                    symbol: "accessibility",
+                    isHighlighted: isAtDestination || reduceMotion
+                )
+                .position(x: destinationX, y: 74)
+
+                Path { path in
+                    path.move(to: CGPoint(x: sourceX + 58, y: 57))
+                    path.addLine(to: CGPoint(x: destinationX - 58, y: 57))
+                }
+                .stroke(
+                    Color.accentColor.opacity(0.38),
+                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [3, 6])
+                )
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.accentColor.opacity(0.7))
+                    .position(x: geometry.size.width / 2, y: 57)
+
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 57, height: 57)
+                    .shadow(color: .black.opacity(0.22), radius: 8, y: 5)
+                    .position(x: itemX, y: 57)
+
+                if !reduceMotion {
+                    Image(systemName: "hand.draw.fill")
+                        .font(.system(size: 21, weight: .medium))
+                        .foregroundStyle(.white, Color.accentColor)
+                        .shadow(color: .black.opacity(0.2), radius: 3, y: 2)
+                        .position(x: itemX + 29, y: 81)
+                }
+            }
+        }
+        .frame(height: 134)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("将 OneClip 图标拖入系统设置的辅助功能列表")
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                isAtDestination = true
+            }
+        }
+    }
+}
+
+private struct PermissionAnimationTile: View {
+    let title: String
+    let symbol: String
+    let isHighlighted: Bool
+
+    var body: some View {
+        VStack(spacing: 9) {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.thinMaterial)
+                .frame(width: 112, height: 82)
+                .overlay {
+                    Image(systemName: symbol)
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(
+                            isHighlighted ? Color.accentColor.opacity(0.32) : Color.secondary.opacity(0.18)
+                        )
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(
+                            isHighlighted ? Color.accentColor.opacity(0.75) : Color.white.opacity(0.18),
+                            lineWidth: isHighlighted ? 1.5 : 0.7
+                        )
+                }
+                .shadow(
+                    color: isHighlighted ? Color.accentColor.opacity(0.22) : Color.black.opacity(0.08),
+                    radius: isHighlighted ? 13 : 5,
+                    y: 4
+                )
+
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .animation(.easeInOut(duration: 0.5), value: isHighlighted)
     }
 }
 
