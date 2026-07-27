@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum ClipboardItemType: String, Codable {
     case text = "text"
@@ -68,8 +69,10 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
     var data: Data?
     var filePath: String? // 新增：文件存储路径
     var isFavorite: Bool // 新增：收藏状态
+    var fingerprint: String?
+    var lastUsedAt: Date?
     
-    init(id: UUID, content: String, type: ClipboardItemType, timestamp: Date, data: Data? = nil, filePath: String? = nil, isFavorite: Bool = false) {
+    init(id: UUID, content: String, type: ClipboardItemType, timestamp: Date, data: Data? = nil, filePath: String? = nil, isFavorite: Bool = false, fingerprint: String? = nil, lastUsedAt: Date? = nil) {
         self.id = id
         self.content = content
         self.type = type
@@ -77,7 +80,12 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         self.data = data
         self.filePath = filePath
         self.isFavorite = isFavorite
+        self.fingerprint = fingerprint
+        self.lastUsedAt = lastUsedAt
     }
+
+    /// 列表按最近使用时间排序；从未使用过的记录仍按复制时间排序。
+    var sortTimestamp: Date { lastUsedAt ?? timestamp }
     
     // 用于 Codable 的自定义编码
     enum CodingKeys: String, CodingKey {
@@ -88,6 +96,8 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         case data
         case filePath
         case isFavorite
+        case fingerprint
+        case lastUsedAt
     }
     
     init(from decoder: Decoder) throws {
@@ -113,6 +123,17 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         data = try container.decode(Data?.self, forKey: .data)
         filePath = try container.decodeIfPresent(String.self, forKey: .filePath)
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        fingerprint = try container.decodeIfPresent(String.self, forKey: .fingerprint)
+
+        if let dateString = try? container.decode(String.self, forKey: .lastUsedAt) {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            lastUsedAt = formatter.date(from: dateString)
+        } else if let timeInterval = try? container.decode(Double.self, forKey: .lastUsedAt) {
+            lastUsedAt = Date(timeIntervalSince1970: timeInterval)
+        } else {
+            lastUsedAt = nil
+        }
     }
     
     func encode(to encoder: Encoder) throws {
@@ -130,6 +151,114 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         try container.encode(data, forKey: .data)
         try container.encodeIfPresent(filePath, forKey: .filePath)
         try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encodeIfPresent(fingerprint, forKey: .fingerprint)
+        if let lastUsedAt {
+            try container.encode(formatter.string(from: lastUsedAt), forKey: .lastUsedAt)
+        }
+    }
+}
+
+enum ClipboardItemFingerprint {
+    static let fileReadChunkSize = 1024 * 1024
+
+    static func make(for item: ClipboardItem) -> String {
+        if let fingerprint = item.fingerprint, !fingerprint.isEmpty {
+            return fingerprint
+        }
+
+        if item.type == .text || item.type == .code {
+            return make(content: item.content, type: item.type, data: nil)
+        }
+
+        if let data = item.data {
+            return make(content: item.content, type: item.type, data: data)
+        }
+
+        if let filePath = item.filePath, !filePath.isEmpty,
+           let fingerprint = make(fileAt: URL(fileURLWithPath: filePath), type: item.type) {
+            return fingerprint
+        }
+
+        // 文件曾经存在但现在不可读时不能只按描述去重，否则多张名为 “Image”
+        // 的历史图片会被错误合并。
+        if item.filePath != nil {
+            return "\(item.type.rawValue):unavailable:\(item.id.uuidString)"
+        }
+
+        return make(content: item.content, type: item.type, data: nil)
+    }
+
+    static func make(content: String, type: ClipboardItemType, data: Data?) -> String {
+        let payload: Data
+
+        switch type {
+        case .text, .code:
+            // 富文本和 HTML 可能携带不同格式数据，但用户看到的文本相同时应视为同一项。
+            payload = Data(content.utf8)
+        case .image, .file, .video, .audio, .document, .archive, .executable:
+            // 二进制内容优先，避免仅凭文件名或图片描述误判不同项目。
+            payload = data ?? Data(content.utf8)
+        }
+
+        return format(SHA256.hash(data: payload), type: type)
+    }
+
+    static func make(fileAt url: URL, type: ClipboardItemType) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            var reachedEnd = false
+            var readFailed = false
+
+            autoreleasepool {
+                do {
+                    guard let chunk = try handle.read(upToCount: fileReadChunkSize), !chunk.isEmpty else {
+                        reachedEnd = true
+                        return
+                    }
+                    hasher.update(data: chunk)
+                } catch {
+                    readFailed = true
+                }
+            }
+
+            if readFailed { return nil }
+            if reachedEnd { break }
+        }
+
+        return format(hasher.finalize(), type: type)
+    }
+
+    private static func format<D: Sequence>(_ digest: D, type: ClipboardItemType) -> String where D.Element == UInt8 {
+        let digestString = digest.map { String(format: "%02x", $0) }.joined()
+        return "\(type.rawValue):\(digestString)"
+    }
+}
+
+enum ClipboardHistoryDeduplicator {
+    static func deduplicate(_ items: [ClipboardItem]) -> [ClipboardItem] {
+        var uniqueItems: [ClipboardItem] = []
+        var fingerprintIndexes: [String: Int] = [:]
+
+        for item in items {
+            guard let fingerprint = item.fingerprint, !fingerprint.isEmpty else {
+                uniqueItems.append(item)
+                continue
+            }
+
+            if let existingIndex = fingerprintIndexes[fingerprint] {
+                if item.isFavorite && !uniqueItems[existingIndex].isFavorite {
+                    uniqueItems[existingIndex] = item
+                }
+            } else {
+                fingerprintIndexes[fingerprint] = uniqueItems.count
+                uniqueItems.append(item)
+            }
+        }
+
+        return uniqueItems
     }
 }
 

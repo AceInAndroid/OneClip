@@ -30,6 +30,7 @@ class ClipboardManager: ObservableObject {
     
     // 性能优化：内存管理
     private let maxImageSize: Int = 10 * 1024 * 1024 // 10MB
+    private let maxClipboardImageBytes: Int64 = 50 * 1024 * 1024
     private var imageCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.totalCostLimit = 50 * 1024 * 1024 // 50MB
@@ -63,7 +64,13 @@ class ClipboardManager: ObservableObject {
     
     // 去重机制优化
     private var recentHashes: Set<String> = []
+    private var itemFingerprints: [UUID: String] = [:]
+    private var knownFingerprints: Set<String> = []
+    private let backgroundFingerprintThreshold = 1024 * 1024
+    private var isFingerprintMigrationRunning = false
     private var lastHashCleanup: Date = Date()
+    private var lastMemoryRetentionCleanup = Date.distantPast
+    private let memoryRetentionCleanupInterval: TimeInterval = 60 * 60
     
     // 缓存清理管理
     private var cacheCleanupTimer: Timer?
@@ -984,19 +991,17 @@ class ClipboardManager: ObservableObject {
             logger.warning("无法获取任何格式的图片数据")
             return
         }
-        
-        // 生成图片描述 - 包含更多识别信息
-        let fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
-        let dataHash = String(data.hashValue)  // 添加数据哈希作为唯一标识
-        let imageInfo = "图片 (\(detectedFormat), \(fileSize)) [\(dataHash.prefix(8))]"
-        
-        // 使用数据哈希进行更准确的重复检测
-        let uniqueKey = "img_\(detectedFormat)_\(data.count)_\(dataHash)"
-        if isDuplicateContent(uniqueKey, type: ClipboardItemType.image) {
-            logger.debug("跳过重复图片内容（数据哈希匹配）")
+
+        guard Int64(data.count) < maxClipboardImageBytes else {
+            logger.warning("图片超过 50MB，已跳过预览存储以保护内存")
             return
         }
         
+        // 图片内容指纹在 addClipboardItem 中按大小选择后台计算，避免在主线程
+        // 对大数据重复执行 Data.hashValue 和 SHA-256。
+        let fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+        let imageInfo = "图片 (\(detectedFormat), \(fileSize))"
+
         // 直接保存原始数据，让 ImagePreviewView 处理解码
         addClipboardItemWithData(content: imageInfo, type: ClipboardItemType.image, data: data)
         logger.info("图片数据已添加: \(imageInfo)")
@@ -1512,37 +1517,48 @@ class ClipboardManager: ObservableObject {
         // 处理第一个图片文件（通常只有一个）
         let imageFile = validImageFiles.first!
         logger.info("加载图片文件: \(imageFile.path)")
-        
-        do {
-            // 读取原始图片文件数据
-            let imageData = try Data(contentsOf: imageFile)
-            logger.info("成功读取图片文件，大小: \(imageData.count) 字节")
-            
-            // 验证是否为有效图片
-            if NSImage(data: imageData) != nil {
-                logger.info("图片文件验证成功，添加到剪贴板历史")
-                
-                // 生成合适的预览文本
-                let fileName = imageFile.lastPathComponent
-                let fileSize = ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file)
-                let previewText = "图片文件: \(fileName) (\(fileSize))"
-                
-                // 创建图片项目，使用原始图片数据
-                if !isDuplicateContent(previewText, type: .image) {
-                    addClipboardItem(content: previewText, type: .image, data: imageData)
-                    logger.info("图片文件已添加到剪贴板历史")
-                } else {
-                    logger.debug("跳过重复的图片文件")
-                }
-            } else {
-                logger.error("图片文件格式无效或损坏: \(imageFile.path)")
-                // 仍然作为文件处理
-                handleFileContent(validImageFiles)
-            }
-        } catch {
-            logger.error("读取图片文件失败: \(error.localizedDescription)")
-            // 降级为文件处理
+
+        if let fileSize = try? imageFile.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           Int64(fileSize) >= maxClipboardImageBytes {
+            logger.info("图片文件超过 50MB，按普通文件记录，避免整文件载入内存")
             handleFileContent(validImageFiles)
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                // 文件读取、图片验证和完整指纹计算都在后台执行。
+                let imageData = try Data(contentsOf: imageFile, options: .mappedIfSafe)
+                guard NSImage(data: imageData) != nil else {
+                    DispatchQueue.main.async {
+                        self?.logger.error("图片文件格式无效或损坏: \(imageFile.path)")
+                        self?.handleFileContent(validImageFiles)
+                    }
+                    return
+                }
+
+                let fileSize = ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file)
+                let previewText = "图片文件: \(imageFile.lastPathComponent) (\(fileSize))"
+                let fingerprint = ClipboardItemFingerprint.make(
+                    content: previewText,
+                    type: .image,
+                    data: imageData
+                )
+
+                DispatchQueue.main.async {
+                    self?.addClipboardItem(
+                        content: previewText,
+                        type: .image,
+                        data: imageData,
+                        precomputedFingerprint: fingerprint
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.logger.error("读取图片文件失败: \(error.localizedDescription)")
+                    self?.handleFileContent(validImageFiles)
+                }
+            }
         }
     }
     
@@ -1739,18 +1755,11 @@ class ClipboardManager: ObservableObject {
             return true
         }
         
-        // 检查是否为最近添加的重复内容（避免连续重复）
-        if let lastItem = clipboardItems.first {
-            if lastItem.content == content && lastItem.type == type {
-                logger.debug("跳过重复内容（最新项匹配）")
-                return true
-            }
-        }
-        
-        // 检查前5个项目是否有重复（更全面的重复检测）
-        let recentItems = Array(clipboardItems.prefix(5))
-        for item in recentItems {
-            if item.content == content && item.type == type {
+        // 文本可以直接按可见内容判断；图片和文件必须留给二进制指纹判断，
+        // 避免两张同尺寸图片或两个同名文件被描述文本误判为重复。
+        if type == .text || type == .code {
+            let fingerprint = ClipboardItemFingerprint.make(content: content, type: type, data: nil)
+            if knownFingerprints.contains(fingerprint) {
                 logger.debug("跳过重复内容（历史项匹配）")
                 return true
             }
@@ -1919,8 +1928,7 @@ class ClipboardManager: ObservableObject {
         
         if hasImage, let imageData = imageData {
             // 快速检查图片是否过大
-            let maxSizeBytes = 50 * 1024 * 1024 // 50MB
-            guard imageData.count < maxSizeBytes else {
+            guard Int64(imageData.count) < maxClipboardImageBytes else {
                 print("图片过大 (\(imageData.count / 1024 / 1024)MB)，已跳过")
                 return
             }
@@ -1936,7 +1944,12 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    private func addClipboardItem(content: String, type: ClipboardItemType, data: Data? = nil) {
+    private func addClipboardItem(
+        content: String,
+        type: ClipboardItemType,
+        data: Data? = nil,
+        precomputedFingerprint: String? = nil
+    ) {
         // 验证输入数据
         guard !content.isEmpty else {
             logger.debug("尝试添加空内容，已忽略")
@@ -1946,44 +1959,39 @@ class ClipboardManager: ObservableObject {
         // 限制内容长度以防止内存问题
         let maxContentLength = 10000
         let truncatedContent = content.count > maxContentLength ? String(content.prefix(maxContentLength)) + "..." : content
-        
-        // 对于图片类型，使用数据哈希进行重复检测
-        if type == .image, let imageData = data {
-            let newDataHash = String(imageData.hashValue)
-            
-            // 检查是否存在相同的图片数据
-            if let existingIndex = clipboardItems.firstIndex(where: { item in
-                guard item.type == .image, let existingData = item.data else { return false }
-                return String(existingData.hashValue) == newDataHash
-            }) {
-                let existingItem = clipboardItems[existingIndex]
-                let timeSinceCreation = Date().timeIntervalSince(existingItem.timestamp)
-                
-                if timeSinceCreation < 30 { // 30秒内相同图片数据不重复添加
-                    logger.debug("跳过重复图片数据（\(timeSinceCreation)秒内已存在，Hash: \(newDataHash)）")
-                    return
+
+        let fingerprintContent = (type == .text || type == .code) ? content : truncatedContent
+        if precomputedFingerprint == nil,
+           type != .text,
+           type != .code,
+           let data,
+           data.count >= backgroundFingerprintThreshold {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let fingerprint = ClipboardItemFingerprint.make(
+                    content: fingerprintContent,
+                    type: type,
+                    data: data
+                )
+                DispatchQueue.main.async {
+                    self?.addClipboardItem(
+                        content: content,
+                        type: type,
+                        data: data,
+                        precomputedFingerprint: fingerprint
+                    )
                 }
-                
-                // 移除旧的图片项目
-                clipboardItems.remove(at: existingIndex)
-                logger.debug("更新现有图片项目 (Hash: \(newDataHash))")
             }
-        } else {
-            // 对于非图片类型，使用内容文本进行重复检测
-            if let existingIndex = clipboardItems.firstIndex(where: { 
-                $0.content == truncatedContent && $0.type == type 
-            }) {
-                let existingItem = clipboardItems[existingIndex]
-                let timeSinceCreation = Date().timeIntervalSince(existingItem.timestamp)
-                
-                if timeSinceCreation < 300 { // 5分钟内相同内容不重复添加
-                    logger.debug("跳过重复内容（\(timeSinceCreation)秒内已存在）")
-                    return
-                }
-                
-                // 移除旧的项目
-                clipboardItems.remove(at: existingIndex)
-            }
+            return
+        }
+
+        let newFingerprint = precomputedFingerprint ?? ClipboardItemFingerprint.make(
+            content: fingerprintContent,
+            type: type,
+            data: data
+        )
+        if knownFingerprints.contains(newFingerprint) {
+            logger.debug("跳过重复项目（类型: \(type.displayName)，指纹: \(newFingerprint.prefix(16))）")
+            return
         }
         
         // 创建新项目
@@ -1992,7 +2000,8 @@ class ClipboardManager: ObservableObject {
             content: truncatedContent,
             type: type,
             timestamp: Date(),
-            data: data
+            data: data,
+            fingerprint: newFingerprint
         )
         
         // 检查该项目是否已经在收藏列表中，并设置正确的收藏状态
@@ -2004,16 +2013,18 @@ class ClipboardManager: ObservableObject {
             timestamp: newItem.timestamp,
             data: newItem.data,
             filePath: newItem.filePath,
-            isFavorite: isFavorite
+            isFavorite: isFavorite,
+            fingerprint: newFingerprint
         )
         
         // 添加到顶部
         clipboardItems.insert(item, at: 0)
+        itemFingerprints[item.id] = newFingerprint
+        knownFingerprints.insert(newFingerprint)
         
         // 生成日志信息
         if type == .image, let imageData = data {
-            let dataHash = String(imageData.hashValue)
-            print("添加新图片项目: \(type.displayName), 数据大小: \(imageData.count) 字节, Hash: \(dataHash)")
+            print("添加新图片项目: \(type.displayName), 数据大小: \(imageData.count) 字节, 指纹: \(newFingerprint.prefix(12))")
         } else {
             print("添加新项目: \(type.displayName)")
         }
@@ -2021,9 +2032,21 @@ class ClipboardManager: ObservableObject {
         removeExpiredItemsFromMemory()
         
         // 异步保存到持久化存储，避免阻塞UI
-        Task.detached(priority: .background) { [weak self] in
-            guard let self = self, let item = self.clipboardItems.first else { return }
-            self.store.saveItem(item)
+        Task.detached(priority: .background) { [weak self, item] in
+            guard let self else { return }
+            let storedItem = self.store.saveItem(item)
+
+            // 图片成功落盘后释放列表中的大块 Data；预览和粘贴按 filePath 按需加载。
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let index = self.clipboardItems.firstIndex(where: { $0.id == storedItem.id }) else {
+                    return
+                }
+                self.clipboardItems[index].data = storedItem.data
+                self.clipboardItems[index].filePath = storedItem.filePath
+                self.clipboardItems[index].fingerprint = storedItem.fingerprint
+                self.updateFilteredItems()
+            }
         }
         
         // 立即发送剪贴板变化通知，确保UI即时更新
@@ -2085,6 +2108,29 @@ class ClipboardManager: ObservableObject {
         } catch {
             logger.error("复制失败: \(error.localizedDescription)")
             FeedbackManager.shared.showError("复制失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 将成功使用的记录提升到首位，并异步持久化排序信息。
+    func markItemAsUsed(_ item: ClipboardItem, at usedAt: Date = Date()) {
+        guard let index = clipboardItems.firstIndex(where: { $0.id == item.id }) else { return }
+
+        var updatedItem = clipboardItems.remove(at: index)
+        updatedItem.lastUsedAt = max(updatedItem.lastUsedAt ?? .distantPast, usedAt)
+        clipboardItems.insert(updatedItem, at: 0)
+
+        if updatedItem.isFavorite || FavoriteManager.shared.isFavorite(updatedItem) {
+            FavoriteManager.shared.updateUsage(for: updatedItem)
+        }
+
+        updateFilteredItems()
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ClipboardItemsChanged"),
+            object: nil
+        )
+
+        Task.detached(priority: .utility) { [weak self, updatedItem, usedAt] in
+            self?.store.markItemUsed(updatedItem, at: usedAt)
         }
     }
     
@@ -2376,6 +2422,7 @@ class ClipboardManager: ObservableObject {
             }
             
             clipboardItems.remove(at: index)
+            rebuildFingerprintIndex()
             store.deleteItem(itemToDelete)
             logger.info("项目已删除: \(itemToDelete.content.prefix(30))")
             updateFilteredItems()
@@ -2389,7 +2436,9 @@ class ClipboardManager: ObservableObject {
     
     func clearAllItems() {
         // 1. 获取所有收藏项目（从FavoriteManager获取，确保数据一致性）
-        let favoriteItems = FavoriteManager.shared.getAllFavorites()
+        let favoriteItems = ClipboardHistoryDeduplicator.deduplicate(
+            FavoriteManager.shared.getAllFavorites()
+        )
         
         // 2. 清理非收藏项目的图片缓存
         for item in clipboardItems {
@@ -2399,32 +2448,32 @@ class ClipboardManager: ObservableObject {
         }
         
         // 3. 清空存储
-        store.clearAllItems()
+        let storedFavoriteItems = store.clearAllItems(preserving: favoriteItems)
         
-        // 4. 重新保存收藏项目到存储
-        for item in favoriteItems {
-            store.saveItem(item)
-        }
+        // 4. 更新ClipboardManager的内存列表，包含所有收藏项目
+        clipboardItems = storedFavoriteItems
+        rebuildFingerprintIndex()
         
-        // 5. 更新ClipboardManager的内存列表，包含所有收藏项目
-        clipboardItems = favoriteItems
-        
-        // 6. 确保收藏项目在ClipboardManager中的状态正确
+        // 5. 确保收藏项目在ClipboardManager中的状态正确
         for i in 0..<clipboardItems.count {
             clipboardItems[i].isFavorite = true
+        }
+
+        if clipboardItems.contains(where: { $0.fingerprint == nil }) {
+            scheduleFingerprintMigration()
         }
         
         logger.info("非收藏项目已清空，收藏项目已保留(\(favoriteItems.count)个)")
         updateFilteredItems()
         
-        // 7. 通知界面更新
+        // 6. 通知界面更新
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: NSNotification.Name("ClipboardItemsChanged"), object: nil)
         }
     }
 
     func applyHistoryRetention() {
-        let removedCount = removeExpiredItemsFromMemory()
+        let removedCount = removeExpiredItemsFromMemory(force: true)
         let retentionDays = settingsManager.autoCleanupDays
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -2441,16 +2490,24 @@ class ClipboardManager: ObservableObject {
     }
 
     @discardableResult
-    private func removeExpiredItemsFromMemory(now: Date = Date()) -> Int {
+    private func removeExpiredItemsFromMemory(now: Date = Date(), force: Bool = false) -> Int {
         let retentionDays = settingsManager.autoCleanupDays
         guard retentionDays > 0 else { return 0 }
+        guard force || now.timeIntervalSince(lastMemoryRetentionCleanup) >= memoryRetentionCleanupInterval else {
+            return 0
+        }
+        lastMemoryRetentionCleanup = now
 
         let originalCount = clipboardItems.count
         clipboardItems.removeAll { item in
             if FavoriteManager.shared.isFavorite(item) { return false }
             return !HistoryRetentionPolicy.shouldRetain(item, retentionDays: retentionDays, now: now)
         }
-        return originalCount - clipboardItems.count
+        let removedCount = originalCount - clipboardItems.count
+        if removedCount > 0 {
+            rebuildFingerprintIndex()
+        }
+        return removedCount
     }
     
     private func clearCache() {
@@ -2466,35 +2523,26 @@ class ClipboardManager: ObservableObject {
     }
     
     private func loadClipboardItems() {
-        clipboardItems = store.loadItems()
-        
-        // 重启后重建去重哈希集合，防止重复预览
-        recentHashes.removeAll()
-        var uniqueItems: [ClipboardItem] = []
-        var seenHashes = Set<String>()
-        
-        for item in clipboardItems {
-            let hash = createItemHash(item)
-            if !seenHashes.contains(hash) {
-                seenHashes.insert(hash)
-                recentHashes.insert(hash)
-                uniqueItems.append(item)
-            } else {
-                logger.info("重启加载时发现重复项目，已跳过: \(item.content.prefix(30))")
+        var loadedItems = store.loadItems()
+        let requiresFingerprintPersistence = loadedItems.contains { $0.fingerprint == nil }
+
+        // 文本指纹不需要磁盘 I/O，可以立即补齐；图片等旧记录交给后台流式迁移。
+        for index in loadedItems.indices where loadedItems[index].fingerprint == nil {
+            if loadedItems[index].type == .text || loadedItems[index].type == .code {
+                loadedItems[index].fingerprint = ClipboardItemFingerprint.make(
+                    content: loadedItems[index].content,
+                    type: loadedItems[index].type,
+                    data: nil
+                )
             }
         }
-        
-        // 更新去重后的项目列表
-        if uniqueItems.count != clipboardItems.count {
-            logger.info("重启后去重：原\(clipboardItems.count)项，去重后\(uniqueItems.count)项")
-            clipboardItems = uniqueItems
-            // 不直接调用私有方法，而是通过清空并重新保存来更新存储
-            DispatchQueue.global(qos: .background).async { [weak self] in
-                self?.store.clearAllItems()
-                for item in uniqueItems {
-                    self?.store.saveItem(item)
-                }
-            }
+
+        let loadedCount = loadedItems.count
+        clipboardItems = ClipboardHistoryDeduplicator.deduplicate(loadedItems)
+        rebuildFingerprintIndex()
+
+        if requiresFingerprintPersistence || clipboardItems.count != loadedCount {
+            scheduleFingerprintMigration(persistKnownFingerprints: true)
         }
         
         logger.info("重启后加载了\(clipboardItems.count)个剪贴板项目")
@@ -2509,21 +2557,101 @@ class ClipboardManager: ObservableObject {
             if !favoriteItems.isEmpty {
                 // 将收藏项目合并到ClipboardManager中（如果不存在的话）
                 var updatedItems = self.clipboardItems
-                for favoriteItem in favoriteItems {
-                    if !updatedItems.contains(where: { $0.id == favoriteItem.id }) {
+                var updatedIDs = Set(updatedItems.map(\.id))
+                var updatedFingerprints = Set(updatedItems.compactMap(\.fingerprint))
+                for var favoriteItem in favoriteItems {
+                    if favoriteItem.fingerprint == nil,
+                       let existingFingerprint = self.itemFingerprints[favoriteItem.id] {
+                        favoriteItem.fingerprint = existingFingerprint
+                    }
+
+                    let isKnownContent = favoriteItem.fingerprint.map(updatedFingerprints.contains) ?? false
+                    if !updatedIDs.contains(favoriteItem.id) && !isKnownContent {
                         updatedItems.append(favoriteItem)
+                        updatedIDs.insert(favoriteItem.id)
+                        if let fingerprint = favoriteItem.fingerprint {
+                            updatedFingerprints.insert(fingerprint)
+                        }
                     }
                 }
                 
                 if updatedItems.count != self.clipboardItems.count {
-                    self.clipboardItems = updatedItems.sorted { $0.timestamp > $1.timestamp }
+                    self.clipboardItems = updatedItems.sorted { $0.sortTimestamp > $1.sortTimestamp }
+                    self.rebuildFingerprintIndex()
                     self.logger.info("重启后恢复了\(favoriteItems.count)个收藏项目")
+                }
+
+                if self.clipboardItems.contains(where: { $0.fingerprint == nil }) {
+                    self.scheduleFingerprintMigration()
                 }
             }
         }
         
         // 启动预加载缓存机制
         preloadRecentImages()
+    }
+
+    private func scheduleFingerprintMigration(persistKnownFingerprints: Bool = false) {
+        guard !isFingerprintMigrationRunning else { return }
+
+        let itemsNeedingMigration = persistKnownFingerprints
+            ? clipboardItems
+            : clipboardItems.filter { $0.fingerprint == nil }
+        guard !itemsNeedingMigration.isEmpty else { return }
+
+        isFingerprintMigrationRunning = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var fingerprints: [UUID: String] = [:]
+            fingerprints.reserveCapacity(itemsNeedingMigration.count)
+
+            for item in itemsNeedingMigration {
+                autoreleasepool {
+                    fingerprints[item.id] = ClipboardItemFingerprint.make(for: item)
+                }
+            }
+
+            self?.store.applyFingerprintMigration(fingerprints)
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let previousCount = self.clipboardItems.count
+
+                for index in self.clipboardItems.indices {
+                    if let fingerprint = fingerprints[self.clipboardItems[index].id] {
+                        self.clipboardItems[index].fingerprint = fingerprint
+                    }
+                }
+
+                self.clipboardItems = ClipboardHistoryDeduplicator.deduplicate(self.clipboardItems)
+                self.rebuildFingerprintIndex()
+                self.isFingerprintMigrationRunning = false
+                self.updateFilteredItems()
+
+                if self.clipboardItems.count != previousCount {
+                    self.logger.info("后台历史去重：原\(previousCount)项，去重后\(self.clipboardItems.count)项")
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("ClipboardItemsChanged"),
+                        object: nil
+                    )
+                }
+
+                // 迁移期间可能恢复了旧收藏，继续处理新增的无指纹记录。
+                if self.clipboardItems.contains(where: { $0.fingerprint == nil }) {
+                    self.scheduleFingerprintMigration()
+                }
+            }
+        }
+    }
+
+    private func rebuildFingerprintIndex() {
+        itemFingerprints = Dictionary(
+            uniqueKeysWithValues: clipboardItems.compactMap { item in
+                guard let fingerprint = item.fingerprint, !fingerprint.isEmpty else { return nil }
+                return (item.id, fingerprint)
+            }
+        )
+        knownFingerprints = Set(itemFingerprints.values)
+        recentHashes = knownFingerprints
     }
     
     private func optimizeImageDataAsync(_ data: Data) async throws -> Data {
@@ -2983,59 +3111,19 @@ class ClipboardManager: ObservableObject {
     
     // 为已存储的ClipboardItem创建哈希用于去重
     func createItemHash(_ item: ClipboardItem) -> String {
-        var components: [String] = []
-        
-        // 添加类型信息
-        components.append("type:\(item.type.rawValue)")
-        
-        // 根据类型添加内容哈希
-        switch item.type {
-        case .image:
-            // 对于图片，使用数据大小和内容的前64字节作为指纹
-            if let data = item.data, data.count > 0 {
-                let prefix = data.prefix(64)
-                let prefixHash = prefix.hashValue
-                components.append("img_data:\(data.count)_\(prefixHash)")
-            } else {
-                // 如果没有数据，使用内容字符串和时间戳
-                components.append("img_content:\(item.content.prefix(100))")
-                components.append("timestamp:\(Int(item.timestamp.timeIntervalSince1970))")
-            }
-        case .text:
-            // 对于文本，使用内容的前500个字符进行精确匹配
-            let textContent = item.content.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            components.append("text:\(textContent.prefix(500))")
-            // 添加字符数作为额外验证
-            components.append("length:\(textContent.count)")
-        case .video:
-            // 对于视频，使用数据哈希和文件信息
-            if let data = item.data, data.count > 0 {
-                let prefix = data.prefix(128)
-                let prefixHash = prefix.hashValue
-                components.append("video_data:\(data.count)_\(prefixHash)")
-            } else {
-                components.append("video_content:\(item.content.prefix(200))")
-            }
-        case .audio:
-            // 对于音频，使用数据哈希和文件信息
-            if let data = item.data, data.count > 0 {
-                let prefix = data.prefix(128)
-                let prefixHash = prefix.hashValue
-                components.append("audio_data:\(data.count)_\(prefixHash)")
-            } else {
-                components.append("audio_content:\(item.content.prefix(200))")
-            }
-        case .file, .document, .code, .archive, .executable:
-            // 对于文件，结合数据和路径信息
-            if let data = item.data, data.count > 0 {
-                let prefix = data.prefix(64)
-                let prefixHash = prefix.hashValue
-                components.append("file_data:\(data.count)_\(prefixHash)")
-            }
-            components.append("file_content:\(item.content.prefix(300))")
+        if let cachedFingerprint = itemFingerprints[item.id] {
+            return cachedFingerprint
         }
-        
-        return components.joined(separator: "|").hash.description
+
+        if let fingerprint = item.fingerprint, !fingerprint.isEmpty {
+            itemFingerprints[item.id] = fingerprint
+            knownFingerprints.insert(fingerprint)
+            return fingerprint
+        }
+
+        // 菜单渲染等主线程调用不得为旧图片同步读取整个文件。后台迁移完成后
+        // 会用真实内容指纹替换这个仅按 ID 区分的临时值。
+        return "pending:\(item.id.uuidString)"
     }
     
     private func updateFilteredItems() {

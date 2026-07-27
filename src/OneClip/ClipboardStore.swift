@@ -26,12 +26,19 @@ class ClipboardStore: ObservableObject {
         return formatter
     }()
     
-    init(getCleanupDays: @escaping () -> Int = { HistoryRetentionPolicy.defaultDays }) {
+    init(
+        getCleanupDays: @escaping () -> Int = { HistoryRetentionPolicy.defaultDays },
+        storageDirectory customStorageDirectory: URL? = nil
+    ) {
         self.getCleanupDays = getCleanupDays
         
         // 创建专用的存储目录
-        let documentsURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        storageDirectory = documentsURL.appendingPathComponent("OneClip", isDirectory: true)
+        if let customStorageDirectory {
+            storageDirectory = customStorageDirectory
+        } else {
+            let documentsURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            storageDirectory = documentsURL.appendingPathComponent("OneClip", isDirectory: true)
+        }
         
         // 创建存储目录
         try? fileManager.createDirectory(at: storageDirectory, withIntermediateDirectories: true, attributes: nil)
@@ -62,7 +69,8 @@ class ClipboardStore: ObservableObject {
     
     // MARK: - 核心存储方法
     
-    func saveItem(_ item: ClipboardItem) {
+    @discardableResult
+    func saveItem(_ item: ClipboardItem) -> ClipboardItem {
         storeLock.lock()
         defer { storeLock.unlock() }
 
@@ -81,6 +89,7 @@ class ClipboardStore: ObservableObject {
         
         // 保存到存储
         saveItemsUnsafe(items)
+        return processedItem
     }
     
     func loadItems() -> [ClipboardItem] {
@@ -115,8 +124,8 @@ class ClipboardStore: ObservableObject {
                 }
             }
             
-            // 按时间戳排序（最新的在前）
-            allItems.sort { $0.timestamp > $1.timestamp }
+            // 最近使用的项目优先；未使用过的项目按复制时间排序。
+            allItems.sort { $0.sortTimestamp > $1.sortTimestamp }
             
             let retentionDays = getCleanupDays()
             allItems.removeAll {
@@ -130,33 +139,30 @@ class ClipboardStore: ObservableObject {
         return allItems
     }
     
-    func clearAllItems() {
+    @discardableResult
+    func clearAllItems(preserving additionalFavorites: [ClipboardItem] = []) -> [ClipboardItem] {
         storeLock.lock()
         defer { storeLock.unlock() }
         
-        do {
-            // 1. 先获取所有收藏项目
-            let allItems = loadItemsUnsafe()
-            let favoriteItems = allItems.filter { $0.isFavorite }
-            
-            // 2. 删除所有日期文件夹
-            let dateDirectories = try fileManager.contentsOfDirectory(at: storageDirectory, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
-            
-            for dateDirectory in dateDirectories {
-                try fileManager.removeItem(at: dateDirectory)
-            }
-            
-            // 3. 重新保存收藏项目
-            for favoriteItem in favoriteItems {
-                let processedItem = processPersistentStorage(for: favoriteItem)
-                let items = [processedItem]
-                saveItemsUnsafe(items)
-            }
-            
-            Logger.shared.info("所有剪贴板项目已清空，保留了 \(favoriteItems.count) 个收藏项目")
-        } catch {
-            Logger.shared.error("清空剪贴板项目失败: \(error.localizedDescription)")
+        let allItems = loadItemsUnsafe()
+        var favoritesByID = Dictionary(
+            uniqueKeysWithValues: allItems.filter { $0.isFavorite }.map { ($0.id, $0) }
+        )
+        for var favorite in additionalFavorites {
+            favorite.isFavorite = true
+            favoritesByID[favorite.id] = favorite
         }
+        let favoriteItems = favoritesByID.values
+            .map { processPersistentStorage(for: $0) }
+            .sorted { $0.sortTimestamp > $1.sortTimestamp }
+
+        // 收藏图片通常只保留 filePath。不能先删除日期目录再保存，否则收藏会指向
+        // 已删除文件。先替换 JSON 索引，再只删除未被收藏引用的二进制文件。
+        replaceItemRecordsUnsafe(favoriteItems)
+        removeUnreferencedBinaryFilesUnsafe(retaining: favoriteItems)
+
+        Logger.shared.info("所有剪贴板项目已清空，保留了 \(favoriteItems.count) 个收藏项目")
+        return favoriteItems
     }
     
     func deleteItem(_ item: ClipboardItem) {
@@ -169,6 +175,47 @@ class ClipboardStore: ObservableObject {
         // 直接保存更新后的项目列表，不调用 clearAllItems()
         saveItemsUnsafe(allItems)
         Logger.shared.info("项目已删除: \(item.id)")
+    }
+
+    /// 记录一次成功的使用，并持久化最近使用排序。使用 max 合并时间，避免异步写入乱序。
+    @discardableResult
+    func markItemUsed(_ item: ClipboardItem, at usedAt: Date) -> ClipboardItem {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+
+        var items = loadItemsUnsafe()
+        let persistedItem = items.first { $0.id == item.id }
+        items.removeAll { $0.id == item.id }
+
+        var updatedItem = item
+        updatedItem.lastUsedAt = [persistedItem?.lastUsedAt, item.lastUsedAt, usedAt]
+            .compactMap { $0 }
+            .max() ?? usedAt
+
+        let processedItem = processPersistentStorage(for: updatedItem)
+        items.append(processedItem)
+        saveItemsUnsafe(items)
+        return processedItem
+    }
+
+    /// 为旧历史补齐持久化指纹，并在一次写入中移除重复记录。
+    /// 只替换 items.json，不删除图片等二进制文件，避免迁移时破坏 filePath。
+    func applyFingerprintMigration(_ fingerprints: [UUID: String]) {
+        guard !fingerprints.isEmpty else { return }
+
+        storeLock.lock()
+        defer { storeLock.unlock() }
+
+        var items = loadItemsUnsafe()
+        for index in items.indices {
+            if let fingerprint = fingerprints[items[index].id] {
+                items[index].fingerprint = fingerprint
+            }
+        }
+
+        let uniqueItems = ClipboardHistoryDeduplicator.deduplicate(items)
+        replaceItemRecordsUnsafe(uniqueItems)
+        Logger.shared.info("历史指纹迁移完成：\(items.count) 项，去重后 \(uniqueItems.count) 项")
     }
     
     // MARK: - 私有辅助方法
@@ -200,6 +247,66 @@ class ClipboardStore: ObservableObject {
             } catch {
                 Logger.shared.error("保存日期项目失败 \(dateString): \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func replaceItemRecordsUnsafe(_ items: [ClipboardItem]) {
+        let retainedDateDirectories = Set(items.map { dateFormatter.string(from: $0.timestamp) })
+
+        // 先覆盖仍然存在的日期记录，避免迁移中途失败时先删掉可恢复的索引。
+        saveItemsUnsafe(items)
+
+        do {
+            let dateDirectories = try fileManager.contentsOfDirectory(
+                at: storageDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: .skipsHiddenFiles
+            )
+
+            for dateDirectory in dateDirectories {
+                let values = try? dateDirectory.resourceValues(forKeys: [.isDirectoryKey])
+                guard values?.isDirectory == true else { continue }
+                guard !retainedDateDirectories.contains(dateDirectory.lastPathComponent) else { continue }
+
+                let itemsFile = dateDirectory.appendingPathComponent("items.json")
+                if fileManager.fileExists(atPath: itemsFile.path) {
+                    try fileManager.removeItem(at: itemsFile)
+                }
+            }
+        } catch {
+            Logger.shared.error("清理空日期的历史索引失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeUnreferencedBinaryFilesUnsafe(retaining items: [ClipboardItem]) {
+        let retainedPaths = Set(items.compactMap { item in
+            item.filePath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        })
+
+        do {
+            let dateDirectories = try fileManager.contentsOfDirectory(
+                at: storageDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: .skipsHiddenFiles
+            )
+
+            for dateDirectory in dateDirectories {
+                let values = try? dateDirectory.resourceValues(forKeys: [.isDirectoryKey])
+                guard values?.isDirectory == true else { continue }
+
+                let files = try fileManager.contentsOfDirectory(
+                    at: dateDirectory,
+                    includingPropertiesForKeys: nil,
+                    options: .skipsHiddenFiles
+                )
+                for file in files where file.lastPathComponent != "items.json" {
+                    if !retainedPaths.contains(file.standardizedFileURL.path) {
+                        try fileManager.removeItem(at: file)
+                    }
+                }
+            }
+        } catch {
+            Logger.shared.error("清理未引用的历史文件失败: \(error.localizedDescription)")
         }
     }
     

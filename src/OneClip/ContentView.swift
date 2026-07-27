@@ -340,6 +340,9 @@ struct ContentView: View {
                                      self.hideWindow()
                                  }
                              },
+                             onSelect: {
+                                 selectedIndex = index
+                             },
                              onPaste: {
                                  performSmartPaste(item: item)
                              },
@@ -348,19 +351,7 @@ struct ContentView: View {
                                  showDeleteFeedback()
                              },
                              index: index,
-                             isSelected: selectedIndex == index,
-                             onHover: { isHovering in
-                                 if isHovering {
-                                     print("鼠标悬浮在索引 \(index) 的项目上，设置selectedIndex = \(index)")
-                                     selectedIndex = index
-                                 } else {
-                                     // 鼠标离开时，只有当前选中的是这个项目时才重置
-                                     if selectedIndex == index {
-                                         print("鼠标离开索引 \(index) 的项目，重置selectedIndex = nil")
-                                         selectedIndex = nil
-                                     }
-                                 }
-                             }
+                             isSelected: selectedIndex == index
                          )
                         .buttonStyle(PlainButtonStyle())
                         .transition(.opacity)
@@ -764,6 +755,9 @@ struct ContentView: View {
             showFeedback(message: "已复制；启用辅助功能权限后可直接粘贴")
             return
         }
+
+        clipboardManager.markItemAsUsed(item)
+        selectedIndex = 0
 
         // 恢复唤出 OneClip 前的应用，再把内容粘贴到原插入点。
         windowManager.hideWindowAndRestorePreviousApplication {

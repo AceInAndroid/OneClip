@@ -5,11 +5,11 @@ import AppKit
 struct ClipboardItemRowView: View {
     let item: ClipboardItem
     let onCopy: () -> Void
+    let onSelect: () -> Void
     let onPaste: () -> Void
     let onDelete: () -> Void
     let index: Int
     let isSelected: Bool
-    let onHover: (Bool) -> Void
     @State private var isHovered = false
     @State private var showDeleteConfirmation = false
     @State private var localIsFavorite: Bool = false
@@ -104,10 +104,9 @@ struct ClipboardItemRowView: View {
                 } else {
                     isHovered = hovering
                 }
-                // 调用悬浮状态回调
-                onHover(hovering)
             }
-            .onTapGesture(perform: onPaste)
+            .gesture(itemClickGesture)
+            .help("单击选择，双击粘贴")
             .alert("确认删除", isPresented: $showDeleteConfirmation) {
                 Button("取消", role: .cancel) { }
                 Button("删除", role: .destructive) {
@@ -283,6 +282,19 @@ struct ClipboardItemRowView: View {
     }
     
     // MARK: - Actions
+
+    private var itemClickGesture: some Gesture {
+        TapGesture(count: 2)
+            .exclusively(before: TapGesture(count: 1))
+            .onEnded { gesture in
+                switch gesture {
+                case .first:
+                    onPaste()
+                case .second:
+                    onSelect()
+                }
+            }
+    }
     
     private func confirmDelete() {
         showDeleteConfirmation = true

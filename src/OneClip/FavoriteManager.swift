@@ -84,7 +84,9 @@ class FavoriteManager: ObservableObject {
             timestamp: item.timestamp,
             data: item.data,
             filePath: item.filePath,
-            isFavorite: true
+            isFavorite: true,
+            fingerprint: item.fingerprint,
+            lastUsedAt: item.lastUsedAt
         )
         
         // 直接在主线程上更新@Published属性
@@ -140,15 +142,21 @@ class FavoriteManager: ObservableObject {
     func isFavorite(_ item: ClipboardItem) -> Bool {
         return favoriteItems.contains(where: { $0.id == item.id })
     }
+
+    func updateUsage(for item: ClipboardItem) {
+        guard let index = favoriteItems.firstIndex(where: { $0.id == item.id }) else { return }
+        favoriteItems[index].lastUsedAt = item.lastUsedAt
+        saveFavorites()
+    }
     
     // 获取所有收藏项目
     func getAllFavorites() -> [ClipboardItem] {
-        return favoriteItems.sorted { $0.timestamp > $1.timestamp }
+        return favoriteItems.sorted { $0.sortTimestamp > $1.sortTimestamp }
     }
     
     // 按类型获取收藏项目
     func getFavorites(ofType type: ClipboardItemType) -> [ClipboardItem] {
-        return favoriteItems.filter { $0.type == type }.sorted { $0.timestamp > $1.timestamp }
+        return favoriteItems.filter { $0.type == type }.sorted { $0.sortTimestamp > $1.sortTimestamp }
     }
     
     // 清空所有收藏
