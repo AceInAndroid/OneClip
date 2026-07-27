@@ -4,6 +4,35 @@ import AppKit
 
 extension Notification.Name {
     static let historyRetentionDidChange = Notification.Name("HistoryRetentionDidChange")
+    static let clipboardPresentationModeDidChange = Notification.Name("ClipboardPresentationModeDidChange")
+}
+
+enum ClipboardPresentationMode: String, CaseIterable, Codable, Identifiable {
+    case bottomShelf
+    case window
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bottomShelf: return "底部弹窗"
+        case .window: return "窗口"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .bottomShelf: return "从屏幕底部弹出，横向浏览"
+        case .window: return "使用经典纵向剪贴板窗口"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .bottomShelf: return "rectangle.bottomthird.inset.filled"
+        case .window: return "macwindow"
+        }
+    }
 }
 
 struct GlobalShortcut: Equatable {
@@ -100,6 +129,7 @@ struct AppSettings: Codable {
     var keepWindowOnTop: Bool
     var globalShortcutKeyCode: UInt16?
     var globalShortcutModifierFlags: UInt?
+    var clipboardPresentationMode: String?
     
     init() {
         showInDock = false
@@ -123,6 +153,7 @@ struct AppSettings: Codable {
         keepWindowOnTop = false
         globalShortcutKeyCode = GlobalShortcut.defaultKeyCode
         globalShortcutModifierFlags = GlobalShortcut.defaultModifierFlags
+        clipboardPresentationMode = ClipboardPresentationMode.bottomShelf.rawValue
     }
 }
 
@@ -236,6 +267,16 @@ class SettingsManager: ObservableObject {
         didSet { saveSettings() }
     }
 
+    @Published var clipboardPresentationMode: ClipboardPresentationMode = .bottomShelf {
+        didSet {
+            saveSettings()
+            NotificationCenter.default.post(
+                name: .clipboardPresentationModeDidChange,
+                object: clipboardPresentationMode
+            )
+        }
+    }
+
     var globalShortcut: GlobalShortcut {
         GlobalShortcut(keyCode: globalShortcutKeyCode, modifierFlags: globalShortcutModifierFlags)
     }
@@ -314,6 +355,9 @@ class SettingsManager: ObservableObject {
             self.keepWindowOnTop = defaults.keepWindowOnTop
             self.globalShortcutKeyCode = defaults.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
             self.globalShortcutModifierFlags = defaults.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
+            self.clipboardPresentationMode = ClipboardPresentationMode(
+                rawValue: defaults.clipboardPresentationMode ?? ""
+            ) ?? .bottomShelf
             
             self.applyTheme()
         }
@@ -385,6 +429,9 @@ class SettingsManager: ObservableObject {
                 self.keepWindowOnTop = settings.keepWindowOnTop
                 self.globalShortcutKeyCode = settings.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
                 self.globalShortcutModifierFlags = settings.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
+                self.clipboardPresentationMode = ClipboardPresentationMode(
+                    rawValue: settings.clipboardPresentationMode ?? ""
+                ) ?? .bottomShelf
                 
                 self.applyTheme()
             }
@@ -456,6 +503,9 @@ class SettingsManager: ObservableObject {
                 self.autoCleanupDays = HistoryRetentionPolicy.normalizedDays(settings.autoCleanupDays)
                 self.themeMode = settings.themeMode
                 self.keepWindowOnTop = settings.keepWindowOnTop
+                self.clipboardPresentationMode = ClipboardPresentationMode(
+                    rawValue: settings.clipboardPresentationMode ?? ""
+                ) ?? .bottomShelf
             }
             
             applyTheme()
@@ -488,6 +538,7 @@ class SettingsManager: ObservableObject {
         settings.keepWindowOnTop = keepWindowOnTop
         settings.globalShortcutKeyCode = globalShortcutKeyCode
         settings.globalShortcutModifierFlags = globalShortcutModifierFlags
+        settings.clipboardPresentationMode = clipboardPresentationMode.rawValue
         
         do {
             let data = try JSONEncoder().encode(settings)

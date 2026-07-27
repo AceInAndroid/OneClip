@@ -19,7 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var permissionMonitorTimer: Timer?
     private var wasAccessibilityDenied = false
     private var cancellables = Set<AnyCancellable>()
-    private var windowManager: WindowManager? // 添加windowManager引用
+    var windowManager: WindowManager?
     private var permissionGuideWindow: NSWindow?
     private var permissionGuideCloseObserver: NSObjectProtocol?
     private var permissionGuideCompletionWorkItem: DispatchWorkItem?
@@ -1319,46 +1319,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 窗口状态 - 可见: \(window.isVisible), 关键窗口: \(window.isKeyWindow)
         
         if window.isVisible && window.isKeyWindow {
-            // 窗口已经可见且是关键窗口，隐藏窗口并隐藏Dock图标
-            // 隐藏窗口并隐藏Dock图标
-            window.orderOut(nil)
-            
-            // 延迟隐藏Dock图标，确保窗口完全隐藏
+            windowManager?.hideWindow()
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                NSApp.setActivationPolicy(.accessory)
-                // 已切换到后台模式（隐藏Dock图标）
-                
-                // 更新菜单状态
                 self.updateStatusBarMenu()
             }
         } else {
-            // 窗口不可见或不是关键窗口，显示窗口并显示Dock图标
-            // 显示现有窗口并显示Dock图标
-            
-            // 首先设置为regular模式，显示Dock图标
             NSApp.setActivationPolicy(.regular)
-            // 已切换到regular模式（显示Dock图标）
-            
-            // 延迟显示窗口，确保应用策略切换完成
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                // 强制激活应用到最前面
-                NSApp.activate(ignoringOtherApps: true)
-                
-                // 显示窗口并设为关键窗口
-                window.orderFront(nil)
-                window.makeKey()
-                
-                // 更精确的居中判断
-                let screenFrame = NSScreen.main?.visibleFrame ?? NSRect.zero
-                let windowFrame = window.frame
-                let needsRepositioning = !window.isVisible || 
-                                       windowFrame.origin.x < screenFrame.minX || 
-                                       windowFrame.origin.y < screenFrame.minY ||
-                                       windowFrame.maxX > screenFrame.maxX ||
-                                       windowFrame.maxY > screenFrame.maxY
-                
-                if needsRepositioning {
-                    window.center()
+                if let windowManager = self.windowManager {
+                    windowManager.showWindow()
+                } else {
+                    NSApp.activate(ignoringOtherApps: true)
+                    window.makeKeyAndOrderFront(nil)
                 }
                 
                 // 发送通知强制刷新图片预览状态
@@ -1386,15 +1360,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     // 隐藏窗口并隐藏Dock图标的方法
     private func hideWindowAndDock() {
-        // 执行窗口隐藏和Dock隐藏
-        
-        let windows = NSApplication.shared.windows
-        guard let window = windows.first else {
-            // 没有找到窗口
+        if let windowManager {
+            windowManager.hideWindow()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.updateStatusBarMenu()
+            }
             return
         }
-        
-        // 隐藏窗口
+
+        let windows = NSApplication.shared.windows
+        guard let window = windows.first else { return }
         window.orderOut(nil)
         
         // 延迟隐藏Dock图标，确保窗口完全隐藏
@@ -2162,127 +2137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // 通过 toggleWindow 和 hideWindowAndDock 方法来控制Dock显示状态
     
     @objc private func quitApp(_ sender: AnyObject?) {
-        // 首先激活应用窗口到最前面
-        // 准备退出应用，激活窗口到最前面
-        
-        // 确保应用策略正确，但避免强制激活
-        NSApp.setActivationPolicy(.regular)
-        
-        // 关闭可能打开的设置面板，避免挡住确认弹窗
-        closeSettingsPanel()
-        
-        // 确保有可见的窗口来显示确认弹窗
-        var targetWindow: NSWindow?
-        
-        // 首先尝试使用现有的主窗口
-        if let window = mainWindow ?? NSApplication.shared.windows.first {
-            // 只在窗口不可见时才激活
-            if !window.isVisible {
-                window.makeKeyAndOrderFront(nil)
-            } else {
-                // 窗口已可见，只需确保在前台
-                window.orderFront(nil)
-            }
-            targetWindow = window
-            // 使用现有窗口显示确认弹窗
-        } else {
-            // 如果没有窗口，先显示主窗口
-            // 没有可见窗口，先显示主窗口
-            showMainWindowToFront()
-            
-            // 等待窗口显示完成后获取窗口引用
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                targetWindow = self.mainWindow ?? NSApplication.shared.windows.first
-                self.showQuitConfirmationDialog(with: targetWindow)
-                return
-            }
-            return
-        }
-        
-        // 显示二次确认弹窗
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.showQuitConfirmationDialog(with: targetWindow)
-        }
-    }
-    
-    // 显示退出确认对话框
-    private func showQuitConfirmationDialog(with parentWindow: NSWindow?) {
-        let alert = NSAlert()
-        alert.messageText = "确认退出 OneClip？"
-        alert.informativeText = "退出后将停止剪贴板监控，您确定要退出应用吗？"
-        alert.alertStyle = .warning
-        
-        // 添加按钮
-        alert.addButton(withTitle: "退出")
-        alert.addButton(withTitle: "取消")
-        
-        // 设置默认按钮为取消
-        alert.buttons[1].keyEquivalent = "\r" // Enter键对应取消
-        alert.buttons[0].keyEquivalent = "" // 退出按钮不设置快捷键
-        
-        // 设置弹窗图标
-        if let appIcon = NSApp.applicationIconImage {
-            alert.icon = appIcon
-        }
-        
-        if let window = parentWindow {
-            // 使用 beginSheetModal 异步显示弹窗
-            // 使用工作表模式显示确认弹窗
-            alert.beginSheetModal(for: window) { [weak self] response in
-                DispatchQueue.main.async {
-                    if response == .alertFirstButtonReturn {
-                        // 用户选择退出
-                        // 用户确认退出应用
-                        self?.performActualQuit()
-                    } else {
-                        // 用户选择取消
-                        // 用户取消退出操作
-                    }
-                }
-            }
-        } else {
-            // 如果没有父窗口，使用独立弹窗模式
-            // 没有找到父窗口，使用独立弹窗模式
-            
-            // 确保弹窗在最前面并且可见
-            alert.window.level = .modalPanel
-            
-            // 只在必要时居中弹窗
-            let alertWindow = alert.window
-            if alertWindow.frame.origin.x < 0 || alertWindow.frame.origin.y < 0 {
-                alertWindow.center()
-            }
-            
-            // 使用异步方式显示独立弹窗
-            DispatchQueue.main.async {
-                let response = alert.runModal()
-                
-                if response == .alertFirstButtonReturn {
-                    // 用户选择退出
-                    // 用户确认退出应用
-                    self.performActualQuit()
-                } else {
-                    // 用户选择取消
-                    // 用户取消退出操作
-                }
-            }
-        }
-    }
-    
-    // 关闭设置面板
-    private func closeSettingsPanel() {
-        // 检查并关闭设置面板
-        
-        // 发送通知来关闭设置面板
-        NotificationCenter.default.post(name: NSNotification.Name("CloseSettingsPanel"), object: nil)
-        
-        // 关闭所有工作表（sheet）
-        for window in NSApplication.shared.windows {
-            if let sheet = window.attachedSheet {
-                window.endSheet(sheet)
-                // 关闭了工作表窗口
-            }
-        }
+        performActualQuit()
     }
     
     // 执行实际的退出操作
@@ -2406,15 +2261,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if let window = mainWindow {
             // 延迟激活窗口，确保应用策略切换完成
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                // 只在窗口不可见或位置异常时才居中
-                if !window.isVisible || window.frame.origin.x < 0 || window.frame.origin.y < 0 {
-                    window.center()
+                if let windowManager = self.windowManager {
+                    windowManager.showWindow()
+                } else {
+                    window.makeKeyAndOrderFront(nil)
                 }
-                
-                // 温和地显示窗口，避免强制激活
-                window.orderFront(nil)
-                window.makeKey()
-                window.level = .normal
                 
                 // 显示现有主窗口，Dock图标已显示
                 
@@ -3364,61 +3215,24 @@ struct OneClipApp: App {
                 .environmentObject(ClipboardManager.shared)
                 .environmentObject(clipboardStore)
                 .environmentObject(windowManager)
-                .onAppear {
-                    // 设置窗口管理器
-                    windowManager.setupWindow()
-                    
-                    // 设置窗口属性并确保在最前面
-                    let windows = NSApplication.shared.windows
-                    if let window = windows.first {
+                .background(
+                    WindowAccessor { window in
                         appDelegate.mainWindow = window
-                        // 确保窗口可以成为关键窗口
-                        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-                        window.titlebarAppearsTransparent = true
-                        window.titleVisibility = .hidden
-                        window.title = "OneClip"
-                        window.styleMask.remove(.resizable)
-                        
-                        // 设置窗口按钮在内容区域内显示（类似访达风格）
-                        window.standardWindowButton(.closeButton)?.superview?.superview?.isHidden = false
-                        window.standardWindowButton(.miniaturizeButton)?.superview?.superview?.isHidden = false
-                        window.standardWindowButton(.zoomButton)?.superview?.superview?.isHidden = false
-                        window.minSize = NSSize(width: 600, height: 600)
-                        window.maxSize = NSSize(width: 600, height: 600)
-                        
-                        // 设置窗口级别
-                        window.level = .normal
-                        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-                        
-                        // 首次启动时温和地显示窗口
-                        DispatchQueue.main.async {
-                            // 温和地显示窗口，避免强制激活
-                            window.orderFront(nil)
-                            window.makeKey()
-                            
-                            // 更精确的居中判断
-                            let screenFrame = NSScreen.main?.visibleFrame ?? NSRect.zero
-                            let windowFrame = window.frame
-                            let needsRepositioning = !window.isVisible || 
-                                                   windowFrame.origin.x < screenFrame.minX || 
-                                                   windowFrame.origin.y < screenFrame.minY ||
-                                                   windowFrame.maxX > screenFrame.maxX ||
-                                                   windowFrame.maxY > screenFrame.maxY
-                            
-                            if needsRepositioning {
-                                window.center()
+                        appDelegate.windowManager = windowManager
+                        windowManager.setupWindow(window)
+
+                        if !windowManager.isWindowVisible {
+                            DispatchQueue.main.async {
+                                windowManager.showWindow()
                             }
-                            
-                            // 首次启动窗口已温和显示
                         }
                     }
-                }
+                )
                 .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowSettings"))) { _ in
                     // 处理设置显示通知
                 }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 600, height: 600)
-        .windowResizability(.contentSize)
     }
 }

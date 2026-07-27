@@ -1,5 +1,48 @@
 import SwiftUI
 import AppKit
+import QuartzCore
+
+struct WindowAccessor: NSViewRepresentable {
+    let onWindowAvailable: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowAccessView {
+        WindowAccessView(onWindowAvailable: onWindowAvailable)
+    }
+
+    func updateNSView(_ nsView: WindowAccessView, context: Context) {
+        nsView.onWindowAvailable = onWindowAvailable
+        nsView.notifyIfNeeded()
+    }
+
+    final class WindowAccessView: NSView {
+        var onWindowAvailable: (NSWindow) -> Void
+        private weak var notifiedWindow: NSWindow?
+
+        init(onWindowAvailable: @escaping (NSWindow) -> Void) {
+            self.onWindowAvailable = onWindowAvailable
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            notifyIfNeeded()
+        }
+
+        func notifyIfNeeded() {
+            guard let window, notifiedWindow !== window else { return }
+            notifiedWindow = window
+
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                self.onWindowAvailable(window)
+            }
+        }
+    }
+}
 
 // 扩展 NSNotification.Name 以包含 dockToggle 通知
 extension NSNotification.Name {
@@ -16,6 +59,7 @@ class WindowManager: ObservableObject {
     private var dockStateObserver: NSObjectProtocol?
     private var preventAutoHideObserver: NSObjectProtocol?
     private var windowOnTopObserver: NSObjectProtocol?
+    private var presentationModeObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
     private var previousActiveApplication: NSRunningApplication?
     private var stateValidationTimer: Timer?
@@ -35,6 +79,7 @@ class WindowManager: ObservableObject {
         self.setupApplicationActivationMonitoring()
         self.setupPreventAutoHideMonitoring()
         self.setupWindowOnTopMonitoring()
+        self.setupPresentationModeMonitoring()
         self.startPeriodicStateValidation()
         self.startPermissionMonitoring()
     }
@@ -62,19 +107,13 @@ class WindowManager: ObservableObject {
         previousActiveApplication = application
     }
     
-    func setupWindow() {
-        let windows = NSApplication.shared.windows
-        window = windows.first
+    func setupWindow(_ targetWindow: NSWindow? = nil) {
+        window = targetWindow ?? NSApplication.shared.windows.first
         
-        // 设置窗口固定大小
         if let window = window {
-            window.styleMask.remove(.resizable)
-            window.setContentSize(NSSize(width: 600, height: 700))
-            window.minSize = NSSize(width: 600, height: 700)
-            window.maxSize = NSSize(width: 600, height: 700)
-            
             // 设置窗口委托来处理窗口事件
             setupWindowDelegate(window)
+            applyPresentationMode(animated: false)
             
             // 应用初始的窗口置顶状态
             applyWindowOnTopState()
@@ -87,6 +126,94 @@ class WindowManager: ObservableObject {
         setupWindowStateMonitoring()
         
         logger.info("窗口管理器已初始化")
+    }
+
+    private func setupPresentationModeMonitoring() {
+        presentationModeObserver = NotificationCenter.default.addObserver(
+            forName: .clipboardPresentationModeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyPresentationMode(animated: true)
+        }
+    }
+
+    func applyPresentationMode(animated: Bool = true) {
+        guard let window else { return }
+
+        let mode = SettingsManager.shared.clipboardPresentationMode
+        let targetScreen = screenAtPointer() ?? window.screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let targetScreen else { return }
+
+        let targetFrame: NSRect
+        switch mode {
+        case .bottomShelf:
+            window.styleMask = [.borderless, .fullSizeContentView]
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.isMovable = false
+            window.isMovableByWindowBackground = false
+            window.backgroundColor = .clear
+            window.isOpaque = false
+            window.hasShadow = true
+
+            let visibleFrame = targetScreen.visibleFrame
+            let horizontalInset: CGFloat = 14
+            let bottomInset: CGFloat = 12
+            let shelfHeight = min(310, max(260, visibleFrame.height * 0.31))
+            targetFrame = NSRect(
+                x: visibleFrame.minX + horizontalInset,
+                y: visibleFrame.minY + bottomInset,
+                width: max(720, visibleFrame.width - horizontalInset * 2),
+                height: shelfHeight
+            )
+
+        case .window:
+            window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.isMovable = true
+            window.isMovableByWindowBackground = true
+            window.backgroundColor = .clear
+            window.isOpaque = false
+            window.hasShadow = true
+
+            let windowSize = NSSize(width: 600, height: 700)
+            let visibleFrame = targetScreen.visibleFrame
+            let existingFrame = window.frame
+            let canKeepPosition = abs(existingFrame.width - windowSize.width) < 1 &&
+                abs(existingFrame.height - windowSize.height) < 1 &&
+                visibleFrame.contains(existingFrame)
+            targetFrame = canKeepPosition ? existingFrame : NSRect(
+                x: visibleFrame.midX - windowSize.width / 2,
+                y: visibleFrame.midY - windowSize.height / 2,
+                width: windowSize.width,
+                height: windowSize.height
+            )
+        }
+
+        window.minSize = targetFrame.size
+        window.maxSize = targetFrame.size
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let shouldAnimate = animated && window.isVisible && SettingsManager.shared.enableAnimations
+        if shouldAnimate {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(targetFrame, display: true)
+            }
+        } else {
+            window.setFrame(targetFrame, display: true)
+        }
+
+        applyWindowOnTopState()
+        logger.info("窗口展示方式已切换为: \(mode.title)")
+    }
+
+    private func screenAtPointer() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) }
     }
     
     private func setupWindowDelegate(_ window: NSWindow) {
@@ -227,11 +354,8 @@ class WindowManager: ObservableObject {
     
     private func showWindowInBackground() {
         guard let window = window else { return }
-        
-        // 只在窗口不可见或位置异常时才居中
-        if !window.isVisible || window.frame.origin.x < 0 || window.frame.origin.y < 0 {
-            window.center()
-        }
+
+        applyPresentationMode(animated: false)
         
         // 在后台模式下显示窗口
         window.setIsVisible(true)
@@ -251,9 +375,19 @@ class WindowManager: ObservableObject {
         guard let window = window else { return }
         
         DispatchQueue.main.async {
-            // 智能窗口定位，考虑多显示器环境
-            self.smartPositionWindow(window)
-            
+            self.applyPresentationMode(animated: false)
+
+            let mode = SettingsManager.shared.clipboardPresentationMode
+            let targetFrame = window.frame
+            if mode == .bottomShelf && SettingsManager.shared.enableAnimations {
+                var startFrame = targetFrame
+                startFrame.origin.y -= 24
+                window.setFrame(startFrame, display: false)
+                window.alphaValue = 0
+            } else {
+                window.alphaValue = 1
+            }
+
             window.makeKeyAndOrderFront(nil)
             
             // 确保窗口获得键盘焦点，这对于键盘事件处理至关重要
@@ -261,6 +395,15 @@ class WindowManager: ObservableObject {
             
             // 强制激活应用到最前面，确保键盘事件能够正确传递
             NSApp.activate(ignoringOtherApps: true)
+
+            if mode == .bottomShelf && SettingsManager.shared.enableAnimations {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.22
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    window.animator().setFrame(targetFrame, display: true)
+                    window.animator().alphaValue = 1
+                }
+            }
             
             // 应用窗口置顶状态
             self.applyWindowOnTopState()
@@ -598,6 +741,10 @@ class WindowManager: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             windowOnTopObserver = nil
         }
+        if let observer = presentationModeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            presentationModeObserver = nil
+        }
         if let observer = applicationActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             applicationActivationObserver = nil
@@ -637,10 +784,7 @@ class WindowManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // 只在窗口不可见或位置异常时才居中
-            if !window.isVisible || window.frame.origin.x < 0 || window.frame.origin.y < 0 {
-                window.center()
-            }
+            self.applyPresentationMode(animated: false)
             
             window.makeKeyAndOrderFront(nil)
             // 移除强制激活检查，让系统自然处理焦点

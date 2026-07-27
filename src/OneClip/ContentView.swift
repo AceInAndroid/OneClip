@@ -25,7 +25,7 @@ struct ContentView: View {
     @State private var selectedIndex: Int? = nil // 当前选中的项目索引
     @State private var showDeleteConfirmation = false // 删除确认对话框
     @State private var selectedItemToDelete: ClipboardItem? = nil // 待删除的项目
-    
+
     // 动画辅助方法
     private func performAnimation(_ animation: Animation, action: @escaping () -> Void) {
         if settingsManager.enableAnimations {
@@ -362,8 +362,8 @@ struct ContentView: View {
             .padding(.vertical, 8)
         }
     }
-    
-    var body: some View {
+
+    private var windowLayout: some View {
         VStack(spacing: 0) {
             topToolbar
             dividerLine
@@ -371,19 +371,152 @@ struct ContentView: View {
             dividerLine
             clipboardItemsList
         }
-        .padding(.top, 28) // 为自定义标题栏留出空间
+        .padding(.top, 28)
         .background(
             ZStack {
-                // 主背景 - 使用更匹配的材质效果
                 VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
                     .ignoresSafeArea(.all)
-                
-                // 渐变覆盖层增强深度
+
                 Self.backgroundGradient(for: colorScheme)
                     .ignoresSafeArea(.all)
                     .allowsHitTesting(false)
             }
         )
+    }
+
+    private var bottomShelfToolbar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "clipboard.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+
+                Text("OneClip")
+                    .font(.system(.body, design: .rounded, weight: .bold))
+            }
+
+            searchBar
+                .frame(width: 250)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(ContentCategory.allCases, id: \.self) { category in
+                        BottomShelfCategoryButton(
+                            category: category,
+                            isSelected: selectedCategory == category,
+                            count: getCategoryCount(category)
+                        ) {
+                            selectedCategory = category
+                        }
+                    }
+                }
+            }
+
+            controlButtons
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+
+    private var bottomShelfItems: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 12) {
+                if filteredItems.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "clipboard")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("暂无剪贴板内容")
+                            .font(.system(.callout, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 220, height: 170)
+                } else {
+                    ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                        ClipboardShelfItemView(
+                            item: item,
+                            index: index,
+                            isSelected: selectedIndex == index,
+                            onCopy: {
+                                clipboardManager.copyToClipboard(item: item)
+                                showCopyFeedback()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                    self.hideWindow()
+                                }
+                            },
+                            onSelect: {
+                                selectedIndex = index
+                            },
+                            onPaste: {
+                                performSmartPaste(item: item)
+                            },
+                            onDelete: {
+                                clipboardManager.deleteItem(item)
+                                showDeleteFeedback()
+                            }
+                        )
+                    }
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal, 18)
+            .padding(.bottom, 16)
+        }
+        .scrollTargetBehavior(.viewAligned)
+    }
+
+    private var bottomShelfLayout: some View {
+        VStack(spacing: 0) {
+            bottomShelfToolbar
+            dividerLine
+            bottomShelfItems
+        }
+        .background(
+            ZStack {
+                VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                    .ignoresSafeArea(.all)
+
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(colorScheme == .dark ? 0.05 : 0.18),
+                        Color.accentColor.opacity(0.035),
+                        Color.black.opacity(colorScheme == .dark ? 0.12 : 0.025)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .allowsHitTesting(false)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.36), Color.white.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: .black.opacity(0.22), radius: 24, y: 10)
+        .padding(8)
+    }
+
+    @ViewBuilder
+    private var activeLayout: some View {
+        switch settingsManager.clipboardPresentationMode {
+        case .bottomShelf:
+            bottomShelfLayout
+        case .window:
+            windowLayout
+        }
+    }
+
+    var body: some View {
+        activeLayout
         .overlay(
             // 反馈提示 - 现代化设计
             VStack {
@@ -548,6 +681,21 @@ struct ContentView: View {
                 selectedIndex = nil
             }
         }
+        .background(
+            CommandNumberKeyMonitor { number in
+                guard !showSettings, !showShortcutsHelp else { return false }
+
+                switch handleNumberKey(number) {
+                case .handled:
+                    return true
+                case .ignored:
+                    return false
+                @unknown default:
+                    return false
+                }
+            }
+            .frame(width: 0, height: 0)
+        )
         .focusable(true)
         .onKeyPress(.escape) {
             // ESC 键隐藏窗口并隐藏Dock图标
@@ -1026,6 +1174,277 @@ struct CategoryTabView: View {
         .buttonStyle(PlainButtonStyle())
         .disabled(count == 0)
         .opacity(count == 0 ? 0.4 : 1.0)
+    }
+}
+
+struct BottomShelfCategoryButton: View {
+    let category: ContentView.ContentCategory
+    let isSelected: Bool
+    let count: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: category.icon)
+                    .font(.system(size: 10, weight: .semibold))
+
+                Text(category.rawValue)
+                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .background(
+                Capsule()
+                    .fill(isSelected ? category.color.opacity(0.9) : Color.primary.opacity(0.055))
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(isSelected ? 0.3 : 0.14), lineWidth: 0.7)
+                    )
+            )
+            .shadow(color: isSelected ? category.color.opacity(0.24) : .clear, radius: 7, y: 3)
+        }
+        .buttonStyle(.plain)
+        .disabled(count == 0)
+        .opacity(count == 0 ? 0.4 : 1)
+    }
+}
+
+struct ClipboardShelfItemView: View {
+    let item: ClipboardItem
+    let index: Int
+    let isSelected: Bool
+    let onCopy: () -> Void
+    let onSelect: () -> Void
+    let onPaste: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isHovered = false
+    @State private var isFavorite = false
+    @State private var showDeleteConfirmation = false
+
+    private var accentColor: Color {
+        switch item.type {
+        case .text: return .blue
+        case .image: return .green
+        case .file: return .orange
+        case .video: return .purple
+        case .audio: return .red
+        case .document: return .cyan
+        case .code: return .mint
+        case .archive: return .pink
+        case .executable: return .indigo
+        }
+    }
+
+    private var summary: String {
+        switch item.type {
+        case .text, .code:
+            return "\(item.content.count) 字符"
+        default:
+            return item.type.displayName
+        }
+    }
+
+    private var itemHelp: String {
+        let quickCopyHint = index < 9 ? "，⌘\(index + 1) 快速复制" : ""
+        return "单击选择，双击粘贴\(quickCopyHint)"
+    }
+
+    private var accessibilityDescription: String {
+        "第 \(index + 1) 项，\(item.type.displayName)，\(item.content)"
+    }
+
+    var body: some View {
+        interactiveCard
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("clipboard-shelf-item-\(index)")
+            .accessibilityLabel(accessibilityDescription)
+            .accessibilityValue(isSelected ? "已选择" : "未选择")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                onSelect()
+            }
+    }
+
+    private var interactiveCard: some View {
+        VStack(spacing: 0) {
+            header
+            preview
+            footer
+        }
+        .frame(width: 218, height: 174)
+        .background(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.18), Color.clear],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(
+                    isSelected ? Color.accentColor : Color.white.opacity(isHovered ? 0.34 : 0.18),
+                    lineWidth: isSelected ? 2.5 : 0.8
+                )
+        )
+        .shadow(
+            color: isSelected ? Color.accentColor.opacity(0.28) : Color.black.opacity(isHovered ? 0.2 : 0.11),
+            radius: isSelected ? 13 : (isHovered ? 10 : 6),
+            y: isHovered || isSelected ? 6 : 3
+        )
+        .scaleEffect(isHovered ? 1.018 : 1)
+        .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .gesture(itemClickGesture)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.16)) {
+                isHovered = hovering
+            }
+        }
+        .contextMenu { contextMenuContent }
+        .help(itemHelp)
+        .onAppear {
+            isFavorite = FavoriteManager.shared.isFavorite(item)
+        }
+        .onReceive(FavoriteManager.shared.$favoriteItems) { _ in
+            isFavorite = FavoriteManager.shared.isFavorite(item)
+        }
+        .alert("确认删除", isPresented: $showDeleteConfirmation) {
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive, action: onDelete)
+        } message: {
+            Text("确定要删除这个剪贴板项目吗？此操作无法撤销。")
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Image(systemName: item.type.icon)
+                .font(.system(size: 12, weight: .bold))
+
+            Text(item.type.displayName)
+                .font(.system(.caption, design: .rounded, weight: .bold))
+
+            Spacer()
+
+            if isFavorite {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.yellow)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .background(
+            LinearGradient(
+                colors: [accentColor.opacity(0.98), accentColor.opacity(0.72)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        Group {
+            if item.type == .image {
+                ImagePreviewView(item: item)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+            } else {
+                Text(item.content)
+                    .font(.system(size: 13, design: item.type == .code ? .monospaced : .default))
+                    .foregroundStyle(.primary)
+                    .lineLimit(5)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(12)
+            }
+        }
+        .frame(height: 108)
+        .background(Color.primary.opacity(0.025))
+        .allowsHitTesting(false)
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(summary)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Text(index < 9 ? "⌘\(index + 1)" : "\(index + 1)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 30)
+        .background(.ultraThinMaterial.opacity(0.72))
+    }
+
+    private var itemClickGesture: some Gesture {
+        TapGesture(count: 2)
+            .exclusively(before: TapGesture(count: 1))
+            .onEnded { gesture in
+                switch gesture {
+                case .first: onPaste()
+                case .second: onSelect()
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var contextMenuContent: some View {
+        Button(action: onPaste) {
+            Label("粘贴到光标位置", systemImage: "arrow.up.doc.on.clipboard")
+        }
+
+        Button(action: onCopy) {
+            Label("复制到剪贴板", systemImage: "doc.on.doc")
+        }
+
+        Divider()
+
+        Button {
+            FavoriteManager.shared.toggleFavorite(item)
+        } label: {
+            Label(isFavorite ? "取消收藏" : "添加收藏", systemImage: isFavorite ? "star.fill" : "star")
+        }
+
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(item.content, forType: .string)
+            if let query = item.content.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let url = URL(string: "https://www.google.com/search?q=\(query)") {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            Label("搜索此内容", systemImage: "magnifyingglass")
+        }
+        .disabled(item.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        Divider()
+
+        Button(role: .destructive) {
+            showDeleteConfirmation = true
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
     }
 }
 
@@ -2825,6 +3244,12 @@ struct SettingsView: View {
     @ViewBuilder
     private func interfaceSettingsView() -> some View {
         LazyVStack(spacing: 24) {
+            ModernSettingsCard(title: "展示方式", icon: "rectangle.3.group.fill", color: .blue) {
+                ClipboardPresentationModeSelector(
+                    selection: $settingsManager.clipboardPresentationMode
+                )
+            }
+
             // 显示选项
             ModernSettingsCard(title: "显示选项", icon: "eye.fill", color: .purple) {
                 VStack(spacing: 16) {
@@ -3443,6 +3868,68 @@ struct VisualEffectView: NSViewRepresentable {
     }
 }
 
+/// Captures Command+1...9 before a focused search field consumes the key event.
+/// Returning nil from the local monitor also prevents the system alert sound.
+struct CommandNumberKeyMonitor: NSViewRepresentable {
+    let action: (Int) -> Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.install()
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator {
+        var action: (Int) -> Bool
+        private var monitor: Any?
+
+        init(action: @escaping (Int) -> Bool) {
+            self.action = action
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      !event.isARepeat,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command],
+                      let characters = event.charactersIgnoringModifiers,
+                      characters.count == 1,
+                      let number = Int(characters),
+                      (1...9).contains(number),
+                      self.action(number) else {
+                    return event
+                }
+
+                return nil
+            }
+        }
+
+        func uninstall() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        deinit {
+            uninstall()
+        }
+    }
+}
+
 // 键盘按键样式
 struct KeyboardKey: View {
     let text: String
@@ -3571,6 +4058,72 @@ final class ShortcutRecorderNSView: NSView {
 }
 
 // MARK: - 现代化设置组件
+
+struct ClipboardPresentationModeSelector: View {
+    @Binding var selection: ClipboardPresentationMode
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(ClipboardPresentationMode.allCases) { mode in
+                let isSelected = selection == mode
+
+                Button {
+                    selection = mode
+                } label: {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 19, weight: .semibold))
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+
+                            Spacer()
+
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary.opacity(0.5))
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(mode.title)
+                                .font(.system(.body, design: .rounded, weight: .semibold))
+                                .foregroundStyle(.primary)
+
+                            Text(mode.subtitle)
+                                .font(.system(.caption, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
+                    .padding(14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(Color.accentColor.opacity(isSelected ? 0.09 : 0))
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(
+                                isSelected ? Color.accentColor.opacity(0.8) : Color.white.opacity(0.16),
+                                lineWidth: isSelected ? 1.5 : 0.7
+                            )
+                    )
+                    .shadow(
+                        color: isSelected ? Color.accentColor.opacity(0.16) : Color.black.opacity(0.05),
+                        radius: isSelected ? 10 : 4,
+                        y: 4
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mode.title)
+                .accessibilityValue(isSelected ? "已选择" : "未选择")
+            }
+        }
+    }
+}
 
 // 现代化设置卡片 - 简洁设计
 struct ModernSettingsCard<Content: View>: View {

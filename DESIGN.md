@@ -11,10 +11,19 @@
 ## Clipboard item interaction
 
 - Hovering or keyboard-selecting an item may change only its highlight; it must not reveal controls or change the row's layout.
-- A primary click pastes the item at the previously focused insertion point. Copy remains an explicit secondary action.
+- A primary click selects an item. A double click pastes it at the previously focused insertion point. Copy remains an explicit secondary action.
 - Direct paste restores the previously active application before sending the paste command. Without macOS Accessibility permission, it safely falls back to copy and reports the permission requirement.
 - Favorite, copy, paste, search, and delete actions live in the native macOS context menu so they inherit the system Liquid Glass treatment and accessibility behavior.
 - The context menu orders the default paste action first, copy second, then organizational and destructive actions separated into clear groups.
+
+## Clipboard presentation modes
+
+- OneClip supports a bottom shelf and a classic window. The bottom shelf is the default for both new installs and settings migrated from versions without a presentation-mode value.
+- The bottom shelf is anchored 12–14 points above the visible screen edge on the display containing the pointer. It spans the available width and enters with a short upward Liquid Glass transition.
+- The shelf uses a compact search/category toolbar and a single horizontally scrolling row of fixed-size cards. Cards expose type, preview, content size, and the `⌘1–9` quick-copy mapping without showing a relative-time counter.
+- Shelf cards and classic rows share the same interaction contract: single click selects, double click pastes, and the context menu owns explicit copy, favorite, search, paste, and delete actions.
+- The classic window remains a centered 600 × 700 point vertical layout. Switching modes is available directly in Interface Settings and updates the current window without a secondary screen.
+- Both modes use translucent system materials, restrained accent borders, continuous corners, and shallow depth so the result remains native to the existing Liquid Glass visual language.
 
 ## Accessibility onboarding
 
