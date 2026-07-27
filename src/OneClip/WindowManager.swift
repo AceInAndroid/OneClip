@@ -16,6 +16,8 @@ class WindowManager: ObservableObject {
     private var dockStateObserver: NSObjectProtocol?
     private var preventAutoHideObserver: NSObjectProtocol?
     private var windowOnTopObserver: NSObjectProtocol?
+    private var applicationActivationObserver: NSObjectProtocol?
+    private var previousActiveApplication: NSRunningApplication?
     private var stateValidationTimer: Timer?
     private var pendingWindowShow = false
     private var lastDockToggleTime: TimeInterval = 0
@@ -30,10 +32,34 @@ class WindowManager: ObservableObject {
     private var lastPermissionCheck: TimeInterval = 0
     
     init() {
+        self.setupApplicationActivationMonitoring()
         self.setupPreventAutoHideMonitoring()
         self.setupWindowOnTopMonitoring()
         self.startPeriodicStateValidation()
         self.startPermissionMonitoring()
+    }
+
+    private func setupApplicationActivationMonitoring() {
+        let workspace = NSWorkspace.shared
+        rememberExternalApplication(workspace.frontmostApplication)
+
+        applicationActivationObserver = workspace.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.rememberExternalApplication(application)
+        }
+    }
+
+    private func rememberExternalApplication(_ application: NSRunningApplication?) {
+        guard let application,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return
+        }
+
+        previousActiveApplication = application
     }
     
     func setupWindow() {
@@ -271,6 +297,20 @@ class WindowManager: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 self.validateAndSyncWindowState()
             }
+        }
+    }
+
+    /// Hides OneClip, restores the app that owned the insertion point, then performs the paste action.
+    func hideWindowAndRestorePreviousApplication(completion: @escaping () -> Void) {
+        hideWindow()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            if let previousApplication = self.previousActiveApplication,
+               !previousApplication.isTerminated {
+                previousApplication.activate(options: [])
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: completion)
         }
     }
     
@@ -557,6 +597,10 @@ class WindowManager: ObservableObject {
         if let observer = windowOnTopObserver {
             NotificationCenter.default.removeObserver(observer)
             windowOnTopObserver = nil
+        }
+        if let observer = applicationActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            applicationActivationObserver = nil
         }
         
         logger.info("WindowManager 已释放，所有资源已清理")

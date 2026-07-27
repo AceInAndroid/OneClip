@@ -333,24 +333,19 @@ struct ContentView: View {
                         let item = filteredItems[index]
                         ClipboardItemRowView(
                              item: item,
-                             onSingleTap: {
+                             onCopy: {
                                  clipboardManager.copyToClipboard(item: item)
                                  showCopyFeedback()
-                 // 单击复制后隐藏窗口
                                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                      self.hideWindow()
                                  }
                              },
-                             onDoubleTap: {
-                                 clipboardManager.copyToClipboard(item: item)
-                                 hideWindowAndPaste()
+                             onPaste: {
+                                 performSmartPaste(item: item)
                              },
                              onDelete: {
                                  clipboardManager.deleteItem(item)
                                  showDeleteFeedback()
-                             },
-                             onSmartPaste: {
-                                 performSmartPaste(item: item)
                              },
                              index: index,
                              isSelected: selectedIndex == index,
@@ -762,15 +757,19 @@ struct ContentView: View {
     private func performSmartPaste(item: ClipboardItem) {
         // 先将内容复制到系统剪贴板
         clipboardManager.copyToClipboard(item: item)
-        
-        // 隐藏窗口
-        windowManager.hideWindow()
-        
-        // 延迟执行粘贴操作，确保窗口隐藏完成且前台应用获得焦点
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+
+        guard AccessibilityPermissionManager.shared.checkPermissionSync() else {
+            Logger.shared.warning("直接粘贴已降级为复制：缺少辅助功能权限")
+            windowManager.hideWindow()
+            showFeedback(message: "已复制；启用辅助功能权限后可直接粘贴")
+            return
+        }
+
+        // 恢复唤出 OneClip 前的应用，再把内容粘贴到原插入点。
+        windowManager.hideWindowAndRestorePreviousApplication {
             self.sendCmdVKeyEvent()
         }
-        
+
         // 显示反馈
         showFeedback(message: "已粘贴到光标位置")
     }
