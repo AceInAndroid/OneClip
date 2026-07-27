@@ -204,35 +204,9 @@ struct ClipboardItemRowView: View {
     }
     
     private var bottomInfo: some View {
-        HStack(spacing: 12) {
-            ModernItemTypeBadge(type: item.type)
-                .scaleEffect(isHovered ? 1.02 : 1.0)
-            
-            Spacer()
-            
-            Text(item.timestamp, style: .relative)
-                .font(.system(.caption, design: .monospaced, weight: .semibold))
-                .foregroundStyle(LinearGradient(
-                    colors: [.secondary.opacity(0.9), .secondary.opacity(0.6)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                ))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule()
-                        .fill(.ultraThinMaterial.opacity(0.6))
-                        .overlay(
-                            Capsule()
-                                .stroke(LinearGradient(
-                                    colors: [Color.white.opacity(0.3), Color.clear],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ), lineWidth: 0.5)
-                        )
-                )
-                .shadow(color: .black.opacity(0.05), radius: 1, x: 0, y: 0.5)
-        }
+        ModernItemTypeBadge(type: item.type)
+            .scaleEffect(isHovered ? 1.02 : 1.0)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
     
     private var cardBackground: some View {
