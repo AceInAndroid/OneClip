@@ -132,3 +132,20 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         try container.encode(isFavorite, forKey: .isFavorite)
     }
 }
+
+enum HistoryRetentionPolicy {
+    static let defaultDays = 60
+    static let selectableDays = [7, 14, 30, 60, 180, 365, 0]
+
+    static func normalizedDays(_ days: Int) -> Int {
+        selectableDays.contains(days) ? days : defaultDays
+    }
+
+    static func shouldRetain(_ item: ClipboardItem, retentionDays: Int, now: Date = Date()) -> Bool {
+        guard !item.isFavorite, retentionDays > 0 else { return true }
+        guard let cutoffDate = Calendar.current.date(byAdding: .day, value: -retentionDays, to: now) else {
+            return true
+        }
+        return item.timestamp >= cutoffDate
+    }
+}

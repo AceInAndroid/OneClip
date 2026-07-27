@@ -10,22 +10,14 @@ class ClipboardStore: ObservableObject {
     }
     
     private let fileManager = FileManager.default
-    private let maxItems = 100 // 最大项目数量
-    
     // 文件存储配置
     private let storageDirectory: URL
-    private let maxStorageSize: Int64 = 500 * 1024 * 1024 // 500MB最大存储
     
     // 线程安全：添加递归锁保护并发操作
     private let storeLock = NSRecursiveLock()
     
     // 获取清理天数的闭包
     private var getCleanupDays: () -> Int
-    
-    // 计算清理时间间隔
-    private var maxFileAge: TimeInterval {
-        return TimeInterval(getCleanupDays() * 24 * 60 * 60)
-    }
     
     // 日期格式化器
     private lazy var dateFormatter: DateFormatter = {
@@ -34,7 +26,7 @@ class ClipboardStore: ObservableObject {
         return formatter
     }()
     
-    init(getCleanupDays: @escaping () -> Int = { 30 }) {
+    init(getCleanupDays: @escaping () -> Int = { HistoryRetentionPolicy.defaultDays }) {
         self.getCleanupDays = getCleanupDays
         
         // 创建专用的存储目录
@@ -44,10 +36,7 @@ class ClipboardStore: ObservableObject {
         // 创建存储目录
         try? fileManager.createDirectory(at: storageDirectory, withIntermediateDirectories: true, attributes: nil)
         
-        // 只有在启用自动清理时才启动定期清理
-        if getCleanupDays() > 0 {
-            schedulePeriodicCleanup()
-        }
+        schedulePeriodicCleanup()
     }
     
     // MARK: - 日期分类存储方法
@@ -76,6 +65,8 @@ class ClipboardStore: ObservableObject {
     func saveItem(_ item: ClipboardItem) {
         storeLock.lock()
         defer { storeLock.unlock() }
+
+        cleanupOldFilesUnsafe()
         
         var items = loadItemsUnsafe()
         
@@ -87,11 +78,6 @@ class ClipboardStore: ObservableObject {
         
         // 添加到列表开头
         items.insert(processedItem, at: 0)
-        
-        // 限制项目数量
-        if items.count > maxItems {
-            items = Array(items.prefix(maxItems))
-        }
         
         // 保存到存储
         saveItemsUnsafe(items)
@@ -132,9 +118,9 @@ class ClipboardStore: ObservableObject {
             // 按时间戳排序（最新的在前）
             allItems.sort { $0.timestamp > $1.timestamp }
             
-            // 限制总数量
-            if allItems.count > maxItems {
-                allItems = Array(allItems.prefix(maxItems))
+            let retentionDays = getCleanupDays()
+            allItems.removeAll {
+                !HistoryRetentionPolicy.shouldRetain($0, retentionDays: retentionDays)
             }
             
         } catch {
@@ -340,63 +326,79 @@ class ClipboardStore: ObservableObject {
         }
     }
     
+    func cleanupExpiredItems() {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        cleanupOldFilesUnsafe()
+    }
+
     private func schedulePeriodicCleanup() {
         // 每小时执行一次清理，但只有在启用自动清理时才执行
         Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             guard let self = self, self.getCleanupDays() > 0 else {
                 return // 如果自动清理被禁用，则跳过清理
             }
-            self.cleanupOldFiles()
+            self.cleanupExpiredItems()
         }
     }
-    
-    private func cleanupOldFiles() {
-        let cutoffDate = Date().addingTimeInterval(-maxFileAge)
-        
+
+    private func cleanupOldFilesUnsafe() {
+        let retentionDays = getCleanupDays()
+        guard retentionDays > 0 else { return }
+
+        let now = Date()
+
         do {
-            let dateDirectories = try fileManager.contentsOfDirectory(at: storageDirectory, includingPropertiesForKeys: [.creationDateKey], options: .skipsHiddenFiles)
-            
+            let dateDirectories = try fileManager.contentsOfDirectory(
+                at: storageDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: .skipsHiddenFiles
+            )
+
             for dateDirectory in dateDirectories {
-                if let creationDate = try? dateDirectory.resourceValues(forKeys: [.creationDateKey]).creationDate,
-                   creationDate < cutoffDate {
+                guard (try? dateDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                    continue
+                }
+
+                let itemsFile = dateDirectory.appendingPathComponent("items.json")
+                guard let data = try? Data(contentsOf: itemsFile),
+                      let items = try? JSONDecoder().decode([ClipboardItem].self, from: data) else {
+                    if let directoryDate = dateFormatter.date(from: dateDirectory.lastPathComponent),
+                       Calendar.current.dateComponents([.day], from: directoryDate, to: now).day ?? 0 >= retentionDays {
+                        try fileManager.removeItem(at: dateDirectory)
+                    }
+                    continue
+                }
+
+                let retainedItems = items.filter {
+                    HistoryRetentionPolicy.shouldRetain($0, retentionDays: retentionDays, now: now)
+                }
+
+                guard retainedItems.count != items.count else { continue }
+
+                if retainedItems.isEmpty {
                     try fileManager.removeItem(at: dateDirectory)
                     print("已清理过期文件夹: \(dateDirectory.lastPathComponent)")
+                    continue
                 }
+
+                let retainedFilePaths = Set(retainedItems.compactMap(\.filePath))
+                let files = try fileManager.contentsOfDirectory(
+                    at: dateDirectory,
+                    includingPropertiesForKeys: nil,
+                    options: .skipsHiddenFiles
+                )
+                for file in files where file != itemsFile && !retainedFilePaths.contains(file.path) {
+                    try fileManager.removeItem(at: file)
+                }
+
+                let retainedData = try JSONEncoder().encode(retainedItems)
+                try retainedData.write(to: itemsFile, options: .atomic)
+                print("已清理 \(items.count - retainedItems.count) 条过期历史，保留收藏记录")
             }
         } catch {
             print("清理过期文件失败: \(error)")
         }
     }
     
-    private func cleanupLargeStorage() {
-        let storageInfo = getStorageInfo()
-        
-        if storageInfo.totalSize > maxStorageSize {
-            // 如果存储超过限制，删除最旧的文件夹
-            do {
-                let dateDirectories = try fileManager.contentsOfDirectory(at: storageDirectory, includingPropertiesForKeys: [.creationDateKey], options: .skipsHiddenFiles)
-                
-                let sortedDirectories = dateDirectories.sorted { dir1, dir2 in
-                    guard let date1 = try? dir1.resourceValues(forKeys: [.creationDateKey]).creationDate,
-                          let date2 = try? dir2.resourceValues(forKeys: [.creationDateKey]).creationDate else {
-                        return false
-                    }
-                    return date1 < date2 // 最旧的在前
-                }
-                
-                // 删除最旧的文件夹直到存储大小合理
-                for directory in sortedDirectories {
-                    try fileManager.removeItem(at: directory)
-                    print("已清理存储文件夹: \(directory.lastPathComponent)")
-                    
-                    let newStorageInfo = getStorageInfo()
-                    if newStorageInfo.totalSize <= maxStorageSize * 8 / 10 { // 清理到80%
-                        break
-                    }
-                }
-            } catch {
-                print("清理大存储失败: \(error)")
-            }
-        }
-    }
 }

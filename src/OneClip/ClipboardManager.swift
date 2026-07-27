@@ -20,15 +20,15 @@ class ClipboardManager: ObservableObject {
     
     // 🔧 修复：保存所有 NotificationCenter 观察者，用于后续清理
     private var notificationObservers: [NSObjectProtocol] = []
+    private var historyRetentionObserver: NSObjectProtocol?
     
     // 延迟初始化 store，以便传入 settingsManager
     internal lazy var store = ClipboardStore(getCleanupDays: { [weak self] in
-        return self?.settingsManager.autoCleanupDays ?? 30
+        return self?.settingsManager.autoCleanupDays ?? HistoryRetentionPolicy.defaultDays
     })
     private let cacheDirectory: URL
     
     // 性能优化：内存管理
-    private let maxItems: Int = 100
     private let maxImageSize: Int = 10 * 1024 * 1024 // 10MB
     private var imageCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
@@ -102,6 +102,14 @@ class ClipboardManager: ObservableObject {
         
         // 设置用户活动监控
         setupUserActivityMonitoring()
+
+        historyRetentionObserver = NotificationCenter.default.addObserver(
+            forName: .historyRetentionDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyHistoryRetention()
+        }
         
         loadClipboardItems()
         updateFilteredItems()
@@ -158,7 +166,7 @@ class ClipboardManager: ObservableObject {
         // 清理旧的观察者
         notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
         notificationObservers.removeAll()
-        
+
         // 监听应用激活事件
         let appActiveObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -334,6 +342,10 @@ class ClipboardManager: ObservableObject {
         // 清理所有 NotificationCenter 观察者
         notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
         notificationObservers.removeAll()
+
+        if let historyRetentionObserver {
+            NotificationCenter.default.removeObserver(historyRetentionObserver)
+        }
         
         // 清理主剪贴板观察者
         if let observer = clipboardObserver {
@@ -2006,24 +2018,7 @@ class ClipboardManager: ObservableObject {
             print("添加新项目: \(type.displayName)")
         }
         
-        // 限制历史记录数量（使用设置管理器），但保护收藏项目
-        if clipboardItems.count > settingsManager.maxItems {
-            // 分离收藏和非收藏项目
-            let favoriteItems = clipboardItems.filter { FavoriteManager.shared.isFavorite($0) }
-            let nonFavoriteItems = clipboardItems.filter { !FavoriteManager.shared.isFavorite($0) }
-            
-            // 计算需要保留的非收藏项目数量
-            let maxNonFavoriteItems = max(0, settingsManager.maxItems - favoriteItems.count)
-            
-            if nonFavoriteItems.count > maxNonFavoriteItems {
-                let removedCount = nonFavoriteItems.count - maxNonFavoriteItems
-                let itemsToKeep = Array(nonFavoriteItems.prefix(maxNonFavoriteItems))
-                
-                // 重新组合列表：收藏项目 + 保留的非收藏项目
-                clipboardItems = favoriteItems + itemsToKeep
-                print("已清理 \(removedCount) 个旧项目，保留 \(favoriteItems.count) 个收藏项目")
-            }
-        }
+        removeExpiredItemsFromMemory()
         
         // 异步保存到持久化存储，避免阻塞UI
         Task.detached(priority: .background) { [weak self] in
@@ -2426,6 +2421,36 @@ class ClipboardManager: ObservableObject {
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: NSNotification.Name("ClipboardItemsChanged"), object: nil)
         }
+    }
+
+    func applyHistoryRetention() {
+        let removedCount = removeExpiredItemsFromMemory()
+        let retentionDays = settingsManager.autoCleanupDays
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.store.cleanupExpiredItems()
+        }
+
+        updateFilteredItems()
+        if removedCount > 0 {
+            logger.info("已按保留期限清理 \(removedCount) 条非收藏历史")
+            NotificationCenter.default.post(name: NSNotification.Name("ClipboardItemsChanged"), object: nil)
+        } else if retentionDays == 0 {
+            logger.info("历史记录保留期限已设为永久")
+        }
+    }
+
+    @discardableResult
+    private func removeExpiredItemsFromMemory(now: Date = Date()) -> Int {
+        let retentionDays = settingsManager.autoCleanupDays
+        guard retentionDays > 0 else { return 0 }
+
+        let originalCount = clipboardItems.count
+        clipboardItems.removeAll { item in
+            if FavoriteManager.shared.isFavorite(item) { return false }
+            return !HistoryRetentionPolicy.shouldRetain(item, retentionDays: retentionDays, now: now)
+        }
+        return originalCount - clipboardItems.count
     }
     
     private func clearCache() {
@@ -2901,24 +2926,6 @@ class ClipboardManager: ObservableObject {
         
         // 立即执行智能缓存清理
         performSmartCacheCleanup()
-        
-        // 限制剪贴板项目数量，但保护收藏项目
-        if clipboardItems.count > maxItems {
-            // 分离收藏和非收藏项目
-            let favoriteItems = clipboardItems.filter { FavoriteManager.shared.isFavorite($0) }
-            let nonFavoriteItems = clipboardItems.filter { !FavoriteManager.shared.isFavorite($0) }
-            
-            // 计算需要保留的非收藏项目数量
-            let maxNonFavoriteItems = max(0, maxItems - favoriteItems.count)
-            
-            if nonFavoriteItems.count > maxNonFavoriteItems {
-                let itemsToKeep = Array(nonFavoriteItems.prefix(maxNonFavoriteItems))
-                clipboardItems = favoriteItems + itemsToKeep
-                logger.info("内存警告清理：保留 \(favoriteItems.count) 个收藏项目")
-            }
-            
-            updateFilteredItems()
-        }
         
         logger.info("内存清理完成")
     }

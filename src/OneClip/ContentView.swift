@@ -1103,7 +1103,83 @@ struct ConditionalGlowModifier: ViewModifier {
     }
 }
 
-// MARK: - 现代化自动清理天数设置组件
+// MARK: - 历史记录保留期限
+struct HistoryRetentionSelector: View {
+    @Binding var value: Int
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("保留期限")
+                    .font(.system(.body, weight: .semibold))
+                Text("自动清理超过所选期限的非收藏记录")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(HistoryRetentionPolicy.selectableDays, id: \.self) { days in
+                    retentionButton(days: days)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func retentionButton(days: Int) -> some View {
+        let isSelected = value == days
+        let title = days == 0 ? "永久" : "\(days) 天"
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                value = days
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: days == 0 ? "infinity" : "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(isSelected ? .accentColor : .primary)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.14))
+                        }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(
+                                isSelected ? Color.accentColor.opacity(0.75) : Color.primary.opacity(0.1),
+                                lineWidth: isSelected ? 1.5 : 1
+                            )
+                    }
+                    .overlay(alignment: .top) {
+                        Capsule()
+                            .fill(Color.white.opacity(isSelected ? 0.32 : 0.16))
+                            .frame(height: 1)
+                            .padding(.horizontal, 8)
+                    }
+            }
+            .shadow(color: isSelected ? Color.accentColor.opacity(0.12) : .clear, radius: 8, y: 3)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(days == 0 ? "永久保留历史记录" : "保留历史记录 \(days) 天")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help(days == 0 ? "不自动清理历史记录" : "自动清理超过 \(days) 天的非收藏记录")
+    }
+}
+
+// MARK: - 旧版自动清理天数设置组件
 struct ModernCleanupDaysStepper: View {
     @Binding var value: Int
     let title: String
@@ -2662,13 +2738,7 @@ struct SettingsView: View {
             // 历史记录
             ModernSettingsCard(title: "历史记录", icon: "clock.fill", color: .purple) {
                 VStack(spacing: 16) {
-                    ModernNumberStepper(
-                        value: $settingsManager.maxItems,
-                        range: 5...25,
-                        step: 5,
-                        title: "最大保存数量",
-                        subtitle: "超过此数量的旧项目将被自动删除"
-                    )
+                    HistoryRetentionSelector(value: $settingsManager.autoCleanupDays)
                 }
             }
             
@@ -3112,10 +3182,10 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
                 }
             }
             
-            // 清理选项
+            // 存储管理
             VStack(spacing: 16) {
                 HStack {
-                    Text("清理选项")
+                    Text("存储管理")
                         .font(.headline)
                         .foregroundColor(.primary)
                     Spacer()
@@ -3123,14 +3193,6 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
                 
                 GroupBox {
                     VStack(spacing: 12) {
-                        ModernCleanupDaysStepper(
-                            value: $settingsManager.autoCleanupDays,
-                            title: "自动清理周期",
-                            subtitle: "系统会自动清理超过指定天数的旧内容"
-                        )
-                        
-                        Divider()
-                        
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("手动清理")

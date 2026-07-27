@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    static let historyRetentionDidChange = Notification.Name("HistoryRetentionDidChange")
+}
+
 struct GlobalShortcut: Equatable {
     static let defaultKeyCode: UInt16 = 9 // V
     static let defaultModifierFlags = NSEvent.ModifierFlags.command.union(.shift).rawValue
@@ -76,7 +80,6 @@ struct GlobalShortcut: Equatable {
 /// 应用设置数据结构
 struct AppSettings: Codable {
     var showInDock: Bool
-    var maxItems: Int
     var enableHistoryPersistence: Bool
     var autoStartOnLogin: Bool
     var isFirstLaunch: Bool
@@ -100,7 +103,6 @@ struct AppSettings: Codable {
     
     init() {
         showInDock = false
-        maxItems = 50
         enableHistoryPersistence = true
         autoStartOnLogin = false
         isFirstLaunch = true
@@ -116,7 +118,7 @@ struct AppSettings: Codable {
         maxImageSize = 1024.0
         compressionQuality = 0.8
         monitoringInterval = 0.6 // Default to 0.6 seconds
-        autoCleanupDays = 30
+        autoCleanupDays = HistoryRetentionPolicy.defaultDays
         themeMode = "system"
         keepWindowOnTop = false
         globalShortcutKeyCode = GlobalShortcut.defaultKeyCode
@@ -130,10 +132,6 @@ class SettingsManager: ObservableObject {
     
     // MARK: - 发布属性，用于 SwiftUI 绑定
     @Published var showInDock: Bool = false {
-        didSet { saveSettings() }
-    }
-    
-    @Published var maxItems: Int = 50 {
         didSet { saveSettings() }
     }
     
@@ -203,8 +201,16 @@ class SettingsManager: ObservableObject {
         didSet { saveSettings() }
     }
     
-    @Published var autoCleanupDays: Int = 30 {
-        didSet { saveSettings() }
+    @Published var autoCleanupDays: Int = HistoryRetentionPolicy.defaultDays {
+        didSet {
+            let normalizedValue = HistoryRetentionPolicy.normalizedDays(autoCleanupDays)
+            guard normalizedValue == autoCleanupDays else {
+                autoCleanupDays = normalizedValue
+                return
+            }
+            saveSettings()
+            NotificationCenter.default.post(name: .historyRetentionDidChange, object: autoCleanupDays)
+        }
     }
     
     @Published var themeMode: String = "system" {
@@ -288,7 +294,6 @@ class SettingsManager: ObservableObject {
         let defaults = AppSettings()
         DispatchQueue.main.async {
             self.showInDock = defaults.showInDock
-            self.maxItems = defaults.maxItems
             self.enableHistoryPersistence = defaults.enableHistoryPersistence
             self.autoStartOnLogin = defaults.autoStartOnLogin
             self.isFirstLaunch = defaults.isFirstLaunch
@@ -321,7 +326,6 @@ class SettingsManager: ObservableObject {
         logger.info("Exporting settings data")
         var settings = AppSettings()
         settings.showInDock = showInDock
-        settings.maxItems = maxItems
         settings.enableHistoryPersistence = enableHistoryPersistence
         settings.autoStartOnLogin = autoStartOnLogin
         settings.isFirstLaunch = isFirstLaunch
@@ -361,7 +365,6 @@ class SettingsManager: ObservableObject {
             
             DispatchQueue.main.async {
                 self.showInDock = settings.showInDock
-                self.maxItems = settings.maxItems
                 self.enableHistoryPersistence = settings.enableHistoryPersistence
                 self.autoStartOnLogin = settings.autoStartOnLogin
                 self.isFirstLaunch = settings.isFirstLaunch
@@ -377,7 +380,7 @@ class SettingsManager: ObservableObject {
                 self.maxImageSize = settings.maxImageSize
                 self.compressionQuality = settings.compressionQuality
                 self.monitoringInterval = settings.monitoringInterval
-                self.autoCleanupDays = settings.autoCleanupDays
+                self.autoCleanupDays = HistoryRetentionPolicy.normalizedDays(settings.autoCleanupDays)
                 self.themeMode = settings.themeMode
                 self.keepWindowOnTop = settings.keepWindowOnTop
                 self.globalShortcutKeyCode = settings.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
@@ -435,7 +438,6 @@ class SettingsManager: ObservableObject {
             
             DispatchQueue.main.async {
                 self.showInDock = settings.showInDock
-                self.maxItems = settings.maxItems
                 self.enableHistoryPersistence = settings.enableHistoryPersistence
                 self.autoStartOnLogin = settings.autoStartOnLogin
                 self.isFirstLaunch = settings.isFirstLaunch
@@ -451,7 +453,7 @@ class SettingsManager: ObservableObject {
                 self.maxImageSize = settings.maxImageSize
                 self.compressionQuality = settings.compressionQuality
                 self.monitoringInterval = settings.monitoringInterval
-                self.autoCleanupDays = settings.autoCleanupDays
+                self.autoCleanupDays = HistoryRetentionPolicy.normalizedDays(settings.autoCleanupDays)
                 self.themeMode = settings.themeMode
                 self.keepWindowOnTop = settings.keepWindowOnTop
             }
@@ -468,7 +470,6 @@ class SettingsManager: ObservableObject {
     private func saveSettings() {
         var settings = AppSettings()
         settings.showInDock = showInDock
-        settings.maxItems = maxItems
         settings.enableHistoryPersistence = enableHistoryPersistence
         settings.autoStartOnLogin = autoStartOnLogin
         settings.isFirstLaunch = isFirstLaunch
