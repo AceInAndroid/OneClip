@@ -9,6 +9,7 @@ class HotkeyManager: ObservableObject {
     private var registeredHotkeyCount = 0
     
     func setupGlobalHotkeys(
+        shortcut: GlobalShortcut,
         onToggleWindow: @escaping () -> Void,
         clipboardManager: ClipboardManager? = nil,
         windowManager: WindowManager? = nil
@@ -21,10 +22,10 @@ class HotkeyManager: ObservableObject {
         registeredHotkeyCount = 0
         
         do {
-            // 全局快捷键: Ctrl+Cmd+V (显示/隐藏窗口)
+            // 全局快捷键：显示/隐藏窗口
             let mainHotkey = try createHotkey(
-                keyCode: 9, // V键
-                modifierFlags: [.command, .control],
+                keyCode: shortcut.keyCode,
+                modifierFlags: shortcut.modifierFlags,
                 action: onToggleWindow,
                 description: "显示/隐藏窗口",
                 hotkeyID: 1001
@@ -33,7 +34,7 @@ class HotkeyManager: ObservableObject {
             hotkeys.append(mainHotkey)
             registeredHotkeyCount += 1
             
-            logger.info("全局快捷键已设置 - Ctrl+Cmd+V")
+            logger.info("全局快捷键已设置 - \(shortcut.displayName)")
             
             // 🔧 修复：验证快捷键是否成功注册
             if registeredHotkeyCount == 1 {
@@ -47,7 +48,7 @@ class HotkeyManager: ObservableObject {
             
             // 提供更详细的错误信息
             if registeredHotkeyCount == 0 {
-                logger.error("未注册任何快捷键，快捷键功能不可用。请检查系统权限（辅助功能）")
+                logger.error("未注册任何快捷键，快捷键功能不可用。请检查快捷键是否被其他应用占用")
             }
         }
     }

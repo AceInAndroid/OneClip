@@ -2931,8 +2931,36 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
         LazyVStack(spacing: 24) {
             // 全局快捷键
             ModernSettingsCard(title: "全局快捷键", icon: "command.circle.fill", color: .orange) {
-                VStack(spacing: 12) {
-                    ModernShortcutRow(keys: "⌃+⌘+V", description: "显示/隐藏窗口")
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("显示/隐藏窗口")
+                                .font(.system(.body, weight: .medium))
+                            Text("点击右侧快捷键框，然后按下新的组合键")
+                                .font(.system(.caption))
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        ShortcutRecorder(shortcut: settingsManager.globalShortcut) { shortcut in
+                            settingsManager.updateGlobalShortcut(shortcut)
+                        }
+                        .frame(width: 160, height: 36)
+                    }
+
+                    HStack {
+                        Text("需要至少包含一个修饰键，例如 ⌘、⇧、⌥ 或 ⌃。")
+                            .font(.system(.caption))
+                            .foregroundColor(.secondary)
+
+                        Spacer()
+
+                        Button("恢复默认 ⌘⇧V") {
+                            settingsManager.updateGlobalShortcut(GlobalShortcut())
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             }
             
@@ -3378,6 +3406,112 @@ struct KeyboardKey: View {
                             .stroke(Color.primary.opacity(0.2), lineWidth: 1)
                     )
             )
+    }
+}
+
+// MARK: - 快捷键录制组件
+
+struct ShortcutRecorder: NSViewRepresentable {
+    let shortcut: GlobalShortcut
+    let onRecord: (GlobalShortcut) -> Void
+
+    func makeNSView(context: Context) -> ShortcutRecorderNSView {
+        let view = ShortcutRecorderNSView()
+        view.onRecord = onRecord
+        view.update(shortcut: shortcut)
+        return view
+    }
+
+    func updateNSView(_ nsView: ShortcutRecorderNSView, context: Context) {
+        nsView.onRecord = onRecord
+        nsView.update(shortcut: shortcut)
+    }
+}
+
+final class ShortcutRecorderNSView: NSView {
+    var onRecord: ((GlobalShortcut) -> Void)?
+
+    private let label = NSTextField(labelWithString: "")
+    private var shortcut = GlobalShortcut()
+    private var isRecording = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        label.alignment = .center
+        label.font = .monospacedSystemFont(ofSize: 14, weight: .semibold)
+        label.lineBreakMode = .byTruncatingMiddle
+        addSubview(label)
+        setAccessibilityLabel("全局快捷键")
+        updateAppearance()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func layout() {
+        super.layout()
+        label.frame = bounds.insetBy(dx: 8, dy: 6)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        isRecording = true
+        updateAppearance()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        record(event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard isRecording else {
+            return super.performKeyEquivalent(with: event)
+        }
+        record(event)
+        return true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        isRecording = false
+        updateAppearance()
+        return super.resignFirstResponder()
+    }
+
+    func update(shortcut: GlobalShortcut) {
+        self.shortcut = shortcut
+        if !isRecording {
+            updateAppearance()
+        }
+    }
+
+    private func record(_ event: NSEvent) {
+        let modifierMask: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+        let modifiers = event.modifierFlags.intersection(modifierMask)
+
+        guard !modifiers.isEmpty,
+              let characters = event.charactersIgnoringModifiers,
+              !characters.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let shortcut = GlobalShortcut(keyCode: event.keyCode, modifierFlags: modifiers.rawValue)
+        isRecording = false
+        onRecord?(shortcut)
+        update(shortcut: shortcut)
+    }
+
+    private func updateAppearance() {
+        label.stringValue = isRecording ? "按下新的组合键" : shortcut.displayName
+        label.textColor = isRecording ? .controlAccentColor : .labelColor
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderWidth = isRecording ? 2 : 1
+        layer?.borderColor = (isRecording ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
     }
 }
 

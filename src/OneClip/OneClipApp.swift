@@ -687,13 +687,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 使用与toggleWindow相同的逻辑判断窗口状态
         let isWindowActiveAndVisible = isWindowCurrentlyActiveAndVisible()
         let toggleTitle = isWindowActiveAndVisible ? "隐藏剪贴板窗口" : "显示剪贴板窗口"
-        let toggleItem = NSMenuItem(title: toggleTitle, action: #selector(toggleWindow), keyEquivalent: "v")
-        toggleItem.keyEquivalentModifierMask = [.command, .control]
+        let shortcut = SettingsManager.shared.globalShortcut
+        let toggleItem = NSMenuItem(
+            title: toggleTitle,
+            action: #selector(toggleWindow),
+            keyEquivalent: shortcut.menuKeyEquivalent
+        )
+        toggleItem.keyEquivalentModifierMask = shortcut.modifierFlags
         if let toggleIcon = NSImage(systemSymbolName: "rectangle.stack.fill", accessibilityDescription: "Toggle") {
             toggleIcon.size = NSSize(width: 16, height: 16)
             toggleItem.image = toggleIcon
         }
-        toggleItem.toolTip = "快捷键: Cmd+Ctrl+V"
+        toggleItem.toolTip = "快捷键: \(shortcut.displayName)"
         menu.addItem(toggleItem)
         
         // 快速粘贴功能已删除
@@ -2473,49 +2478,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     private func setupGlobalHotkey() {
         print("[DEBUG] setupGlobalHotkey 开始执行")
-        
-        // 确保在主线程上执行
+
+        // Carbon 全局热键不依赖辅助功能权限，立即注册即可。
         DispatchQueue.main.async {
             print("[DEBUG] 在主线程中创建 HotkeyManager 实例")
-            // 创建 HotkeyManager 实例
             self.hotkeyManager = HotkeyManager()
-            
-            // 使用优化的权限检查
-            print("[DEBUG] 开始异步权限检查")
-            self.checkPermissionAsync { [weak self] hasPermission in
-                guard let self = self else { return }
-                
-                print("[DEBUG] setupGlobalHotkey 权限检查结果: \(hasPermission)")
-                
-                // 设置全局快捷键，传递必要的依赖项
-                print("[DEBUG] 设置全局快捷键")
-                self.hotkeyManager?.setupGlobalHotkeys(
-                    onToggleWindow: { [weak self] in
-                        guard let self = self else { return }
-                        // 热键触发 - 显示/隐藏主窗口 (Cmd+Ctrl+V)
-                        DispatchQueue.main.async {
-                            self.toggleWindow(nil)
-                        }
-                    },
-                    clipboardManager: ClipboardManager.shared,
-                    windowManager: nil // WindowManager 将在需要时传递
-                )
-                
-                print("[DEBUG] 全局热键设置完成: Cmd+Ctrl+V")
-                
-                // 如果没有权限，请求权限（集中处理）
-                if !hasPermission {
-                    print("[DEBUG] 权限不足，调用 requestAccessibilityPermissions")
-                    self.requestAccessibilityPermissions()
-                } else {
-                    print("[DEBUG] 权限已获得，无需请求权限")
-                }
-                
-                // 延迟验证快捷键注册状态
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                    print("[DEBUG] 开始验证快捷键注册状态")
-                    self?.verifyHotkeyRegistration()
-                }
+
+            print("[DEBUG] 设置全局快捷键")
+            self.hotkeyManager?.setupGlobalHotkeys(
+                shortcut: SettingsManager.shared.globalShortcut,
+                onToggleWindow: { [weak self] in
+                    guard let self = self else { return }
+                    DispatchQueue.main.async {
+                        self.toggleWindow(nil)
+                    }
+                },
+                clipboardManager: ClipboardManager.shared,
+                windowManager: nil
+            )
+
+            print("[DEBUG] 全局热键设置完成: \(SettingsManager.shared.globalShortcut.displayName)")
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                print("[DEBUG] 开始验证快捷键注册状态")
+                self?.verifyHotkeyRegistration()
             }
         }
     }
@@ -2523,20 +2509,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - 快捷键验证
     
     private func verifyHotkeyRegistration() {
-        // 验证快捷键注册状态...
-        
-        self.checkPermissionAsync { hasPermission in
-            let _ = self.hotkeyManager != nil
-            
-            // HotkeyManager 实例状态检查
-            // 辅助功能权限状态检查
-            
-            if !hasPermission {
-                // 快捷键将仅在当前应用中工作，需要权限才能在所有应用中使用
-            }
-            
-            // 测试提示: 请尝试按 Cmd+Ctrl+V 显示主窗口
-        }
+        let shortcut = SettingsManager.shared.globalShortcut.displayName
+        let isRegistered = hotkeyManager?.isHotKeyFunctional() == true
+        print("[DEBUG] 全局快捷键 \(shortcut) 注册状态: \(isRegistered)")
     }
     
     private func requestAccessibilityPermissions() {
@@ -3006,6 +2981,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 } else {
                     self?.removeStatusBarItem()
                 }
+            }
+            .store(in: &cancellables)
+
+        settings.$globalShortcutKeyCode
+            .combineLatest(settings.$globalShortcutModifierFlags)
+            .dropFirst()
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
+            .sink { [weak self] _, _ in
+                self?.setupGlobalHotkey()
+                self?.updateStatusBarMenu()
             }
             .store(in: &cancellables)
         

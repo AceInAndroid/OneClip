@@ -1,5 +1,77 @@
 import Foundation
 import SwiftUI
+import AppKit
+
+struct GlobalShortcut: Equatable {
+    static let defaultKeyCode: UInt16 = 9 // V
+    static let defaultModifierFlags = NSEvent.ModifierFlags.command.union(.shift).rawValue
+
+    let keyCode: UInt16
+    let modifierFlags: NSEvent.ModifierFlags
+
+    init(
+        keyCode: UInt16 = GlobalShortcut.defaultKeyCode,
+        modifierFlags: UInt = GlobalShortcut.defaultModifierFlags
+    ) {
+        self.keyCode = keyCode
+        self.modifierFlags = NSEvent.ModifierFlags(rawValue: modifierFlags)
+    }
+
+    var displayName: String {
+        var parts: [String] = []
+        if modifierFlags.contains(.control) { parts.append("⌃") }
+        if modifierFlags.contains(.option) { parts.append("⌥") }
+        if modifierFlags.contains(.shift) { parts.append("⇧") }
+        if modifierFlags.contains(.command) { parts.append("⌘") }
+        return parts.joined() + Self.keyName(for: keyCode)
+    }
+
+    var menuKeyEquivalent: String {
+        Self.keyEquivalent(for: keyCode)
+    }
+
+    private static func keyName(for keyCode: UInt16) -> String {
+        switch keyCode {
+        case 0...5: return ["A", "S", "D", "F", "H", "G"][Int(keyCode)]
+        case 6...9: return ["Z", "X", "C", "V"][Int(keyCode - 6)]
+        case 11: return "B"
+        case 12...15: return ["Q", "W", "E", "R"][Int(keyCode - 12)]
+        case 16...17: return ["Y", "T"][Int(keyCode - 16)]
+        case 18...29: return ["1", "2", "3", "4", "6", "5", "=", "9", "7", "-", "8", "0"][Int(keyCode - 18)]
+        case 31...35: return ["O", "U", "[", "I", "P"][Int(keyCode - 31)]
+        case 37...40: return ["L", "J", "'", "K"][Int(keyCode - 37)]
+        case 41: return ";"
+        case 43...47: return ["\\", ",", "/", "N", "M"][Int(keyCode - 43)]
+        case 49: return "Space"
+        case 36: return "Return"
+        case 48: return "Tab"
+        case 51: return "Delete"
+        case 53: return "Esc"
+        default: return "Key \(keyCode)"
+        }
+    }
+
+    private static func keyEquivalent(for keyCode: UInt16) -> String {
+        switch keyCode {
+        case 0...5: return ["a", "s", "d", "f", "h", "g"][Int(keyCode)]
+        case 6...9: return ["z", "x", "c", "v"][Int(keyCode - 6)]
+        case 11: return "b"
+        case 12...15: return ["q", "w", "e", "r"][Int(keyCode - 12)]
+        case 16...17: return ["y", "t"][Int(keyCode - 16)]
+        case 18...29: return ["1", "2", "3", "4", "6", "5", "=", "9", "7", "-", "8", "0"][Int(keyCode - 18)]
+        case 31...35: return ["o", "u", "[", "i", "p"][Int(keyCode - 31)]
+        case 37...40: return ["l", "j", "'", "k"][Int(keyCode - 37)]
+        case 41: return ";"
+        case 43...47: return ["\\", ",", "/", "n", "m"][Int(keyCode - 43)]
+        case 49: return " "
+        case 36: return "\r"
+        case 48: return "\t"
+        case 51: return "\u{8}"
+        case 53: return "\u{1B}"
+        default: return ""
+        }
+    }
+}
 
 /// 应用设置数据结构
 struct AppSettings: Codable {
@@ -23,6 +95,8 @@ struct AppSettings: Codable {
     var autoCleanupDays: Int
     var themeMode: String
     var keepWindowOnTop: Bool
+    var globalShortcutKeyCode: UInt16?
+    var globalShortcutModifierFlags: UInt?
     
     init() {
         showInDock = false
@@ -45,6 +119,8 @@ struct AppSettings: Codable {
         autoCleanupDays = 30
         themeMode = "system"
         keepWindowOnTop = false
+        globalShortcutKeyCode = GlobalShortcut.defaultKeyCode
+        globalShortcutModifierFlags = GlobalShortcut.defaultModifierFlags
     }
 }
 
@@ -145,6 +221,18 @@ class SettingsManager: ObservableObject {
             NotificationCenter.default.post(name: NSNotification.Name("WindowOnTopChanged"), object: keepWindowOnTop)
         }
     }
+
+    @Published var globalShortcutKeyCode: UInt16 = GlobalShortcut.defaultKeyCode {
+        didSet { saveSettings() }
+    }
+
+    @Published var globalShortcutModifierFlags: UInt = GlobalShortcut.defaultModifierFlags {
+        didSet { saveSettings() }
+    }
+
+    var globalShortcut: GlobalShortcut {
+        GlobalShortcut(keyCode: globalShortcutKeyCode, modifierFlags: globalShortcutModifierFlags)
+    }
     
     // MARK: - 私有属性
     private let logger = Logger.shared
@@ -188,6 +276,11 @@ class SettingsManager: ObservableObject {
         logger.info("Marking permission prompt as shown")
         hasShownPermissionPrompt = true
     }
+
+    func updateGlobalShortcut(_ shortcut: GlobalShortcut) {
+        globalShortcutKeyCode = shortcut.keyCode
+        globalShortcutModifierFlags = shortcut.modifierFlags.rawValue
+    }
     
     /// 重置到默认设置
     func resetToDefaults() {
@@ -214,6 +307,8 @@ class SettingsManager: ObservableObject {
             self.autoCleanupDays = defaults.autoCleanupDays
             self.themeMode = defaults.themeMode
             self.keepWindowOnTop = defaults.keepWindowOnTop
+            self.globalShortcutKeyCode = defaults.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
+            self.globalShortcutModifierFlags = defaults.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
             
             self.applyTheme()
         }
@@ -285,6 +380,8 @@ class SettingsManager: ObservableObject {
                 self.autoCleanupDays = settings.autoCleanupDays
                 self.themeMode = settings.themeMode
                 self.keepWindowOnTop = settings.keepWindowOnTop
+                self.globalShortcutKeyCode = settings.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
+                self.globalShortcutModifierFlags = settings.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
                 
                 self.applyTheme()
             }
@@ -388,6 +485,8 @@ class SettingsManager: ObservableObject {
         settings.autoCleanupDays = autoCleanupDays
         settings.themeMode = themeMode
         settings.keepWindowOnTop = keepWindowOnTop
+        settings.globalShortcutKeyCode = globalShortcutKeyCode
+        settings.globalShortcutModifierFlags = globalShortcutModifierFlags
         
         do {
             let data = try JSONEncoder().encode(settings)

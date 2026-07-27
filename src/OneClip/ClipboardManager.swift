@@ -3340,20 +3340,6 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    deinit {
-        // 停止所有监控
-        stopMonitoring()
-        
-        // 移除所有通知观察者
-        NotificationCenter.default.removeObserver(self)
-        DistributedNotificationCenter.default().removeObserver(self)
-        
-        // 停止所有定时器
-        cacheCleanupTimer?.invalidate()
-        cacheCleanupTimer = nil
-        
-        logger.info("ClipboardManager 已释放，所有资源已清理")
-    }
 }
 
 class ImageCacheManager {

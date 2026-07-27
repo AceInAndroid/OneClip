@@ -28,6 +28,10 @@ enum LogLevel: String, CaseIterable {
 
 class Logger {
     static let shared = Logger()
+
+    static func debug(_ message: String, file: String = #file, function: String = #function, line: Int = #line) {
+        shared.debug(message, file: file, function: function, line: line)
+    }
     
     private let subsystem = "com.oneclip.app"
     private let category = "main"

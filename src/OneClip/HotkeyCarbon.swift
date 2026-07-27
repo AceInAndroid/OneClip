@@ -5,11 +5,12 @@ class Hotkey {
     private let keyCode: UInt16
     private let modifierFlags: NSEvent.ModifierFlags
     private let callback: () -> Void
-    private let hotkeyID: UInt32
+    let hotkeyID: UInt32
     
     // Carbon 热键（更稳定的全局热键方案）
     private var carbonHotkeyID: EventHotKeyID?
     private var carbonHotkey: EventHotKeyRef?
+    private var carbonEventHandler: EventHandlerRef?
     
     // NSEvent 监听器（备用）
     private var globalEventMonitor: Any?
@@ -29,7 +30,6 @@ class Hotkey {
         self.modifierFlags = modifierFlags
         self.callback = callback
         self.hotkeyID = hotkeyID
-        checkAccessibilityPermissions()
         
         // 设置Carbon热键事件处理
         setupCarbonEventHandler()
@@ -37,49 +37,40 @@ class Hotkey {
     
     func register() {
         Logger.debug("开始注册全局快捷键 (KeyCode: \(keyCode))...")
-        
-        // 立即检查权限
-        checkAccessibilityPermissions()
-        
-        var success = false
-        
-        // 优先使用Carbon热键API（更可靠）
-        if hasAccessibilityPermission {
-            success = registerCarbonHotkey()
-            if success {
-                useCarbon = true
-                Logger.debug("使用Carbon API注册热键成功")
-            }
+
+        if carbonEventHandler == nil {
+            setupCarbonEventHandler()
         }
-        
-        // 如果Carbon失败或没有权限，使用NSEvent作为备用
-        if !success {
+
+        // Carbon 的 RegisterEventHotKey 不依赖辅助功能权限，应始终优先尝试。
+        // 之前这里被权限状态拦截，未授权时会错误地回退到真正需要权限的
+        // NSEvent 全局监听，导致快捷键在其他应用中完全无效。
+        if registerCarbonHotkey() {
+            useCarbon = true
+            isRegistered = true
+            Logger.debug("使用Carbon API注册热键成功")
+        } else {
+            // 仅当 Carbon 注册确实失败时才使用 NSEvent 作为备用方案。
+            checkAccessibilityPermissions()
             setupNSEventMonitors()
             useCarbon = false
             Logger.debug("使用NSEvent备用方案")
-            success = true  // NSEvent setup always "succeeds"
+
+            if !hasAccessibilityPermission && !hasRequestedPermission {
+                Logger.debug("Carbon注册失败；NSEvent全局监听需要辅助功能权限")
+                hasRequestedPermission = true
+                startPermissionMonitoring()
+            }
         }
-        
-        // 立即显示权限引导（如果需要）
-        if !hasAccessibilityPermission && !hasRequestedPermission {
-            Logger.debug("快捷键将仅在当前应用中工作，需要权限才能在所有应用中使用")
-            hasRequestedPermission = true  // 仅标记已请求，不显示弹窗
-            startPermissionMonitoring()
-        }
-        
+
         Logger.debug("全局快捷键注册完成: \(modifierDescription())")
-        
-        // 显示状态信息
-        if hasAccessibilityPermission {
-            Logger.debug("快捷键将在所有应用中工作")
-        } else {
-            Logger.debug("快捷键仅在当前应用中工作")
-        }
     }
     
     // MARK: - Carbon 热键实现（主要方案）
     
     private func setupCarbonEventHandler() {
+        guard carbonEventHandler == nil else { return }
+
         // 设置Carbon事件处理器 - 修复版本
         let eventTypes: [EventTypeSpec] = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -88,6 +79,7 @@ class Hotkey {
         // 使用Unmanaged来保存self引用，避免内存泄漏
         let unmanagedSelf = Unmanaged.passUnretained(self)
         
+        var eventHandler: EventHandlerRef?
         let result = InstallEventHandler(
             GetApplicationEventTarget(),
             { (_, event, userData) -> OSStatus in
@@ -98,14 +90,22 @@ class Hotkey {
             eventTypes.count,
             eventTypes,
             unmanagedSelf.toOpaque(),
-            nil
+            &eventHandler
         )
         
-        if result == noErr {
+        if result == noErr, let eventHandler {
+            carbonEventHandler = eventHandler
             Logger.debug("Carbon事件处理器安装成功")
         } else {
             Logger.debug("Carbon事件处理器安装失败: \(result)")
         }
+    }
+
+    private func removeCarbonEventHandler() {
+        guard let eventHandler = carbonEventHandler else { return }
+        RemoveEventHandler(eventHandler)
+        carbonEventHandler = nil
+        Logger.debug("Carbon事件处理器已移除")
     }
     
     private func registerCarbonHotkey() -> Bool {
@@ -372,6 +372,9 @@ class Hotkey {
         
         // 注销Carbon热键
         unregisterCarbonHotkey()
+
+        // 事件处理器保存了 self 的裸指针，必须在实例释放前移除。
+        removeCarbonEventHandler()
         
         // 移除NSEvent监听器
         unregisterNSEventMonitors()
