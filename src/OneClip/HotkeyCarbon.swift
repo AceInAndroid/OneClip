@@ -17,9 +17,7 @@ class Hotkey {
     private var localEventMonitor: Any?
     
     // 状态管理
-    private var permissionTimer: Timer?
     private var isRegistered = false
-    private var hasRequestedPermission = false
     private var lastTriggerTime: TimeInterval = 0
     private let debounceInterval: TimeInterval = 0.2 // 200ms防抖动
     private var hasAccessibilityPermission = false
@@ -56,10 +54,8 @@ class Hotkey {
             useCarbon = false
             Logger.debug("使用NSEvent备用方案")
 
-            if !hasAccessibilityPermission && !hasRequestedPermission {
+            if !hasAccessibilityPermission {
                 Logger.debug("Carbon注册失败；NSEvent全局监听需要辅助功能权限")
-                hasRequestedPermission = true
-                startPermissionMonitoring()
             }
         }
 
@@ -250,45 +246,6 @@ class Hotkey {
         }
     }
     
-    private func startPermissionMonitoring() {
-        guard !hasAccessibilityPermission else { return }
-        
-        Logger.debug("[HotkeyCarbon] 开始权限监控")
-        
-        // 每30秒检查一次权限，减少检查频率
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
-                return
-            }
-            
-            // 使用单例管理器检查权限
-            AccessibilityPermissionManager.shared.checkPermissionAsync { [weak self] newStatus in
-                guard let self = self else { return }
-                
-                if newStatus != self.hasAccessibilityPermission {
-                    self.hasAccessibilityPermission = newStatus
-                    
-                    if newStatus {
-                        Logger.debug("[HotkeyCarbon] 获得辅助功能权限，停止监控")
-                        timer.invalidate()
-                        self.permissionTimer = nil
-                        
-                        // 尝试切换到更稳定的Carbon API
-                        if !self.useCarbon && self.registerCarbonHotkey() {
-                            self.unregisterNSEventMonitors()
-                            self.useCarbon = true
-                            Logger.debug("已切换到Carbon API")
-                        }
-                    } else {
-                        Logger.debug("[HotkeyCarbon] 仍缺少辅助功能权限，但不在此处弹窗")
-                        // 权限弹窗统一由OneClipApp管理
-                    }
-                }
-            }
-        }
-    }
-    
     // MARK: - 辅助方法
     
     private func modifierFlagsMatch(_ eventFlags: NSEvent.ModifierFlags) -> Bool {
@@ -366,10 +323,6 @@ class Hotkey {
     func unregister() {
         Logger.debug("开始注销全局快捷键...")
         
-        // 停止定时器
-        permissionTimer?.invalidate()
-        permissionTimer = nil
-        
         // 注销Carbon热键
         unregisterCarbonHotkey()
 
@@ -381,8 +334,6 @@ class Hotkey {
         
         // 重置状态
         isRegistered = false
-        hasRequestedPermission = false
-        
         Logger.debug("全局快捷键已注销")
     }
     

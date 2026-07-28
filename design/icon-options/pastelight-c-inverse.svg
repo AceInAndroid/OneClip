@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="ring" x1="170" y1="150" x2="840" y2="860" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#69BDFF"/>
+      <stop offset="0.55" stop-color="#2B7CF3"/>
+      <stop offset="1" stop-color="#174FC1"/>
+    </linearGradient>
+    <linearGradient id="letter" x1="340" y1="250" x2="720" y2="780" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3F9DFF"/>
+      <stop offset="1" stop-color="#1959D7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#123B83" flood-opacity="0.19"/>
+    </filter>
+  </defs>
+  <circle cx="512" cy="512" r="430" fill="url(#ring)" filter="url(#shadow)"/>
+  <circle cx="512" cy="512" r="386" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="368" fill="#F8FBFF" stroke="#DDEBFF" stroke-width="6"/>
+  <path fill="url(#letter)" fill-rule="evenodd" d="M352 780V252h210c148 0 247 78 247 205 0 132-99 211-247 211h-91v112H352Zm119-421v202h83c82 0 131-37 131-102 0-64-49-100-131-100h-83Z"/>
+</svg>

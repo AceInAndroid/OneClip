@@ -72,16 +72,12 @@ class WindowManager: ObservableObject {
     private var lastToggleTime: TimeInterval = 0
     private let minToggleInterval: TimeInterval = 0.1 // 防止快速连续操作
     private var isProcessingToggle = false
-    private var permissionCheckTimer: Timer?
-    private var lastPermissionCheck: TimeInterval = 0
-    
     init() {
         self.setupApplicationActivationMonitoring()
         self.setupPreventAutoHideMonitoring()
         self.setupWindowOnTopMonitoring()
         self.setupPresentationModeMonitoring()
         self.startPeriodicStateValidation()
-        self.startPermissionMonitoring()
     }
 
     private func setupApplicationActivationMonitoring() {
@@ -754,10 +750,6 @@ class WindowManager: ObservableObject {
         stateValidationTimer?.invalidate()
         stateValidationTimer = nil
         
-        // 停止权限检查定时器
-        permissionCheckTimer?.invalidate()
-        permissionCheckTimer = nil
-        
         // 移除所有通知观察者
         if let observer = dockStateObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -1055,35 +1047,4 @@ class WindowManager: ObservableObject {
         }
     }
     
-    /// 检查系统权限变化
-    private func checkSystemPermissions() {
-        let currentTime = Date().timeIntervalSince1970
-        
-        // 避免频繁检查权限
-        if currentTime - lastPermissionCheck < 30.0 { // 30秒检查一次
-            return
-        }
-        
-        lastPermissionCheck = currentTime
-        
-        // 检查辅助功能权限（仅检查，不弹窗）
-        let hasAccessibilityPermission = AccessibilityPermissionManager.shared.checkPermissionSync()
-        
-        if !hasAccessibilityPermission {
-            logger.warning("辅助功能权限已丢失，可能影响全局快捷键功能")
-            // 只记录状态，不触发弹窗，弹窗统一由OneClipApp管理
-        }
-    }
-    
-    /// 启动权限监控
-    private func startPermissionMonitoring() {
-        // 使用更长的权限检查间隔，减少系统调用
-        let permissionCheckInterval: TimeInterval = 300.0 // 从2分钟调整为5分钟
-        permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: permissionCheckInterval, repeats: true) { [weak self] _ in
-            // 只在应用活跃时检查权限
-            if NSApp.isActive {
-                self?.checkSystemPermissions()
-            }
-        }
-    }
 }

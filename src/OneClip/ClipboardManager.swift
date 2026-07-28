@@ -123,18 +123,13 @@ class ClipboardManager: ObservableObject {
     }
     
     func startMonitoring() {
-        // 检查权限状态
-        do {
-            try checkPermissions()
-            setupClipboardObserver()
-            
-            // 启动用户活动监控
-            activityMonitor.startMonitoring()
-            
-            logger.info("剪贴板监控已启动")
-        } catch {
-            logger.error("启动剪贴板监控失败: \(error.localizedDescription)")
-        }
+        checkPermissions()
+        setupClipboardObserver()
+
+        // 启动用户活动监控
+        activityMonitor.startMonitoring()
+
+        logger.info("剪贴板监控已启动")
     }
     
     private func setupClipboardObserver() {
@@ -261,85 +256,15 @@ class ClipboardManager: ObservableObject {
         isAppActive = false
     }
     
-    private func checkPermissions() throws {
-        // 检查剪贴板访问权限
-        let pasteboard = NSPasteboard.general
-        
-        // 尝试访问剪贴板以检查权限
-        guard pasteboard.types != nil else {
-            logger.error("剪贴板访问被拒绝 - 可能需要在系统偏好设置中授予权限")
-            
-            // 显示用户友好的错误提示
-            DispatchQueue.main.async {
-                self.showPermissionAlert()
-            }
-            
-            throw ClipboardError.accessDenied
-        }
-        
-        // 检查辅助功能权限 - 使用单例管理器，避免重复调用
+    private func checkPermissions() {
+        // macOS 读取通用剪贴板不需要辅助功能权限；该权限仅用于模拟 Cmd+V。
         let accessibilityEnabled = AccessibilityPermissionManager.shared.checkPermissionSync()
-        
+
         if !accessibilityEnabled {
-            logger.warning("辅助功能权限未授予，但不阻止基本功能")
-            // 不抛出错误，允许基本功能继续工作
+            logger.info("辅助功能权限未授予；剪贴板历史正常工作，直接粘贴将回退为复制")
         }
-        
+
         logger.info("权限检查完成")
-    }
-    
-    private func showPermissionAlert() {
-        let alert = NSAlert()
-        alert.messageText = "需要剪贴板访问权限"
-        alert.informativeText = """
-        PasteLight 需要访问剪贴板以监控复制的内容。
-        
-        请按照以下步骤授予权限：
-        1. 打开系统偏好设置 > 安全性与隐私 > 隐私
-        2. 在左侧列表中找到"辅助功能"或"自动化"
-        3. 确保 PasteLight 已添加并勾选
-        4. 重启 PasteLight 应用
-        
-        如果问题仍然存在，请尝试重新授权或联系技术支持。
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "打开系统偏好设置")
-        alert.addButton(withTitle: "稍后")
-        
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            // 适配不同版本 macOS 的系统设置打开方式
-            let macOSVersion = ProcessInfo.processInfo.operatingSystemVersion
-            if macOSVersion.majorVersion >= 13 { // macOS Ventura 及以后
-                if let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                    NSWorkspace.shared.open(settingsURL)
-                }
-            } else {
-                if let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
-                    NSWorkspace.shared.open(settingsURL)
-                }
-            }
-        }
-    }
-    
-    private func retryClipboardAccess() {
-        logger.info("尝试重新访问剪贴板...")
-        
-        let pasteboard = NSPasteboard.general
-        
-        // 尝试重新获取类型信息
-        if let types = pasteboard.types, !types.isEmpty {
-            logger.info("剪贴板访问恢复，重新处理内容")
-            // 重新处理剪贴板内容
-            handleClipboardChange()
-        } else {
-            logger.warning("剪贴板仍然无法访问，可能需要用户手动授权")
-            
-            // 检查是否需要显示权限提示
-            DispatchQueue.main.async {
-                self.showPermissionAlert()
-            }
-        }
     }
     
     // 🔧 修复：添加 deinit 清理所有资源
@@ -505,14 +430,9 @@ class ClipboardManager: ObservableObject {
         let types = pasteboard.types
         logger.debug("剪贴板可用类型: \(types?.map { $0.rawValue } ?? ["nil"])")
         
-        // 如果 types 为空，尝试权限检查和重试
+        // 空剪贴板是正常状态，不代表访问被拒绝；等待下一次 changeCount 变化即可。
         if types == nil || types?.isEmpty == true {
-            logger.error("剪贴板类型为空，可能是权限问题或系统限制")
-            
-            // 尝试重新获取权限并重试
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.retryClipboardAccess()
-            }
+            logger.debug("剪贴板为空，等待下一次变化")
             return
         }
         

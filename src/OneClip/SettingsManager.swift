@@ -332,6 +332,7 @@ class SettingsManager: ObservableObject {
     /// 重置到默认设置
     func resetToDefaults() {
         logger.info("Resetting settings to defaults")
+        AccessibilityPermissionManager.shared.setPromptSuppressed(false)
         let defaults = AppSettings()
         DispatchQueue.main.async {
             self.showInDock = defaults.showInDock

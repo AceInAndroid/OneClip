@@ -28,8 +28,21 @@
 ## Accessibility onboarding
 
 - Authorization uses one compact Liquid Glass guide instead of a text-heavy blocking alert.
+- PasteLight checks authorization shortly after launch, while clipboard capture and the global Carbon shortcut remain available without it.
+- Release builds always expose the current authorization state and a manual guide entry in both Settings and the menu-bar menu.
+- An empty pasteboard is a normal state and must never be interpreted as denied authorization or stop clipboard monitoring.
+- `AccessibilityPermissionManager` is the single source for authorization state and temporary polling while the guide is active; feature owners must not create independent permission timers.
+- “Do not remind again” suppresses automatic guides only. Manual entries always work, and resetting all settings clears this preference.
 - The guide demonstrates moving the PasteLight icon into macOS Accessibility settings and also mentions the system `+` control.
 - “Open System Settings” is the only emphasized action; defer and disable-reminder actions remain visually secondary.
 - Permission state is detected automatically and transitions inline to a brief success state without opening another alert.
 - Motion is subtle, runs only while permission is missing, and respects Reduce Motion.
 - Permission copy explains the actual benefit—pasting at the current insertion point—and avoids implying that clipboard history requires this permission.
+
+## About PasteLight
+
+- The menu-bar About window and the About page in Settings share one SwiftUI component and one source of truth for author, email, repository, version, and build information.
+- The page leads with the PasteLight icon, concise lightweight positioning, author, and version; contact actions remain visible without opening a secondary view.
+- Email and repository rows are directly actionable and expose clear labels, values, hover affordance, and accessibility descriptions.
+- The standalone window uses a borderless translucent surface with continuous corners, subtle blue depth, and restrained highlights consistent with the app's Liquid Glass language.
+- Author is `Ace` and the support email is `2577113@qq.com`.

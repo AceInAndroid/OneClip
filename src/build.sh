@@ -1,83 +1,85 @@
 #!/bin/bash
 
-# PasteLight 构建脚本
+set -euo pipefail
+
 log_info() {
     echo "[INFO] $1"
-}
-
-log_error() {
-    echo "[ERROR] $1" >&2
 }
 
 log_success() {
     echo "[SUCCESS] $1"
 }
 
-log_info "🚀 构建 PasteLight..."
-
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_PATH="$PROJECT_DIR/OneClip.xcodeproj"
 OUTPUT_DIR="$PROJECT_DIR/dist"
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pastelight-release.XXXXXX")"
 
-# 确保输出目录存在
+cleanup() {
+    rm -rf "$TEMP_ROOT"
+}
+trap cleanup EXIT
+
 mkdir -p "$OUTPUT_DIR"
 
-log_info "📁 项目目录: $PROJECT_DIR"
-log_info "📦 输出目录: $OUTPUT_DIR"
+log_info "构建 PasteLight 双架构 Release 安装包"
+log_info "输出目录: $OUTPUT_DIR"
 
-# 清理并构建
-log_info "🧹 清理之前的构建..."
-xcodebuild -project "$PROJECT_DIR/OneClip.xcodeproj" -scheme OneClip -configuration Debug clean
-if [ $? -ne 0 ]; then
-    log_error "清理失败"
-    exit 1
-fi
+for ARCH in arm64 x86_64; do
+    DERIVED_DATA="$TEMP_ROOT/DerivedData-$ARCH"
+    APP_PATH="$DERIVED_DATA/Build/Products/Release/PasteLight.app"
 
-log_info "🔨 开始构建..."
-xcodebuild -project "$PROJECT_DIR/OneClip.xcodeproj" -scheme OneClip -configuration Debug build
-if [ $? -ne 0 ]; then
-    log_error "构建失败"
-    exit 1
-fi
+    log_info "构建 $ARCH..."
+    xcodebuild \
+        -quiet \
+        -project "$PROJECT_PATH" \
+        -scheme OneClip \
+        -configuration Release \
+        -destination "generic/platform=macOS" \
+        -derivedDataPath "$DERIVED_DATA" \
+        ARCHS="$ARCH" \
+        ONLY_ACTIVE_ARCH=NO \
+        clean build
 
-# 查找构建产物
-DERIVED_DATA_DIR=$(xcodebuild -showBuildSettings -project "$PROJECT_DIR/OneClip.xcodeproj" -scheme OneClip -configuration Debug | grep " BUILD_DIR " | sed 's/.*= //')
-SOURCE_APP="$DERIVED_DATA_DIR/Debug/PasteLight.app"
-
-if [ -d "$SOURCE_APP" ]; then
-    log_success "✅ 构建成功"
-    log_info "📋 复制应用到输出目录..."
-    
-    # 删除旧的应用（如果存在）
-    if [ -d "$OUTPUT_DIR/PasteLight.app" ]; then
-        rm -rf "$OUTPUT_DIR/PasteLight.app"
+    if [ ! -d "$APP_PATH" ]; then
+        echo "[ERROR] 未找到构建产物: $APP_PATH" >&2
+        exit 1
     fi
-    
-    # 复制新的应用
-    cp -R "$SOURCE_APP" "$OUTPUT_DIR/"
-    
-    log_success "✅ PasteLight.app 已复制到: $OUTPUT_DIR/PasteLight.app"
-    
-    # 显示应用信息
-    if [ -f "$OUTPUT_DIR/PasteLight.app/Contents/Info.plist" ]; then
-        parse_plist_value() {
-            plutil -p "$1" | grep "$2" | sed 's/.*=> "//' | sed 's/"//'
-        }
-        
-        VERSION=$(parse_plist_value "$OUTPUT_DIR/PasteLight.app/Contents/Info.plist" CFBundleShortVersionString)
-        BUILD=$(parse_plist_value "$OUTPUT_DIR/PasteLight.app/Contents/Info.plist" CFBundleVersion)
-        log_info "📱 应用版本: $VERSION (Build $BUILD)"
+
+    INFO_PLIST="$APP_PATH/Contents/Info.plist"
+    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")"
+    BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")"
+    EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
+    ACTUAL_ARCH="$(lipo -archs "$APP_PATH/Contents/MacOS/$EXECUTABLE")"
+
+    if [ "$ACTUAL_ARCH" != "$ARCH" ]; then
+        echo "[ERROR] 架构校验失败，期望 $ARCH，实际 $ACTUAL_ARCH" >&2
+        exit 1
     fi
-    
-    # 计算应用大小
-    APP_SIZE=$(du -sh "$OUTPUT_DIR/PasteLight.app" | cut -f1)
-    log_info "💾 应用大小: $APP_SIZE"
-    
-    log_info "🎉 构建完成！"
-    log_info "📍 应用位置: $OUTPUT_DIR/PasteLight.app"
-    log_info "🚀 可以直接运行: open \"$OUTPUT_DIR/PasteLight.app\""
-    
-else
-    log_error "❌ 构建失败，未找到应用文件"
-    log_error "检查 Xcode 构建日志获取详细信息"
-    exit 1
-fi
+
+    codesign --verify --deep --strict "$APP_PATH"
+
+    STAGING_DIR="$TEMP_ROOT/dmg-$ARCH"
+    mkdir -p "$STAGING_DIR"
+    ditto "$APP_PATH" "$STAGING_DIR/PasteLight.app"
+    ln -s /Applications "$STAGING_DIR/Applications"
+
+    DMG_PATH="$OUTPUT_DIR/PasteLight-$VERSION-$ARCH.dmg"
+    log_info "制作 $(basename "$DMG_PATH")..."
+    hdiutil create \
+        -volname "PasteLight $VERSION" \
+        -srcfolder "$STAGING_DIR" \
+        -format UDZO \
+        -ov \
+        "$DMG_PATH" >/dev/null
+
+    hdiutil verify "$DMG_PATH" >/dev/null
+    log_success "$(basename "$DMG_PATH") — $ARCH, $VERSION (Build $BUILD)"
+done
+
+log_info "SHA-256"
+shasum -a 256 \
+    "$OUTPUT_DIR/PasteLight-$VERSION-arm64.dmg" \
+    "$OUTPUT_DIR/PasteLight-$VERSION-x86_64.dmg"
+
+log_success "PasteLight 双架构 Release DMG 构建完成"

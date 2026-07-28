@@ -3000,11 +3000,11 @@ struct ModernCircleButtonStyle: ButtonStyle {
 struct SettingsView: View {
     @StateObject private var settingsManager = SettingsManager.shared
     @ObservedObject private var clipboardManager = ClipboardManager.shared
+    @ObservedObject private var accessibilityPermissionManager = AccessibilityPermissionManager.shared
     @EnvironmentObject private var windowManager: WindowManager
     @State private var showingExportAlert = false
     @State private var showingImportAlert = false
     @State private var showingResetAlert = false
-    @State private var showingAbout = false
     @State private var alertMessage = ""
     @State private var alertTitle = ""
     @State private var selectedTab = 0
@@ -3370,6 +3370,41 @@ struct SettingsView: View {
                         icon: "bell.fill",
                         binding: $settingsManager.enableNotifications
                     )
+                }
+            }
+
+            ModernSettingsCard(title: "直接粘贴", icon: "accessibility", color: .blue) {
+                HStack(spacing: 14) {
+                    Image(systemName: accessibilityPermissionManager.hasPermission ? "checkmark.shield.fill" : "hand.raised.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(accessibilityPermissionManager.hasPermission ? .green : .orange)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            Circle()
+                                .fill((accessibilityPermissionManager.hasPermission ? Color.green : Color.orange).opacity(0.12))
+                        )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(accessibilityPermissionManager.hasPermission ? "辅助功能已授权" : "需要辅助功能权限")
+                            .font(.system(.body, design: .default, weight: .medium))
+                        Text(accessibilityPermissionManager.hasPermission
+                             ? "双击即可粘贴到当前光标位置"
+                             : "剪贴板历史不受影响；授权后可直接粘贴")
+                            .font(.system(.caption, design: .default))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button(accessibilityPermissionManager.hasPermission ? "查看状态" : "开启") {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("ShowAccessibilityPermissionGuide"),
+                            object: nil
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .accessibilityHint("打开辅助功能授权引导")
                 }
             }
             
@@ -3879,137 +3914,16 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
         }
     }
     
-    // 关于页面
+    // 关于页面与菜单栏关于窗口共享同一组件和品牌信息。
     @ViewBuilder
     private func aboutView() -> some View {
-        VStack(spacing: 24) {
-            // 应用信息
-            VStack(spacing: 16) {
-                // 使用应用图标
-                if let appIcon = NSImage(named: "AppIcon") {
-                    Image(nsImage: appIcon)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 80, height: 80)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(
-                                    LinearGradient(
-                                        colors: [.blue.opacity(0.3), .purple.opacity(0.3)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: 1
-                                )
-                        )
-                        .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
-                } else {
-                    // 回退图标
-                    Image(systemName: "doc.on.clipboard.fill")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
-                
-                Text("PasteLight")
-                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    .foregroundColor(.primary)
-                
-                Text("轻量剪贴板")
-                    .font(.system(.title3, design: .default, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1")")
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.1))
-                    )
-            }
-            
-            // 功能特性
-            ModernSettingsCard(title: "主要功能", icon: "star.fill", color: .orange) {
-                VStack(spacing: 16) {
-                    FeatureRow(icon: "doc.on.clipboard", title: "智能剪贴板管理", description: "自动保存和分类剪贴板内容")
-                    
-                    Divider().opacity(0.5)
-                    
-                    FeatureRow(icon: "magnifyingglass", title: "快速搜索", description: "即时搜索和过滤历史记录")
-                    
-                    Divider().opacity(0.5)
-                    
-                    FeatureRow(icon: "photo", title: "多媒体支持", description: "支持文本、图片、文件等多种格式")
-                    
-                    Divider().opacity(0.5)
-                    
-                    FeatureRow(icon: "keyboard", title: "全局快捷键", description: "随时随地快速访问")
-                }
-            }
-            
-            // 开发者信息
-            VStack(spacing: 8) {
-                Text("开发者：Wcowin")
-                    .font(.system(.body, design: .default, weight: .medium))
-                    .foregroundColor(.primary)
-                Text("联系我：wcowin@qq.com")
-                    .font(.system(.body, design: .default, weight: .medium))
-                    .foregroundColor(.primary)                
-                Text("© 2026 PasteLight. All rights reserved.")
-                    .font(.system(.caption, design: .default))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        PasteLightAboutView()
+            .padding(.vertical, 8)
     }
 }
 
 // MARK: - 辅助视图
 
-// 特性行
-struct FeatureRow: View {
-    let icon: String
-    let title: String
-    let description: String
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 28, height: 28)
-                .background(
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.blue, .purple],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(.body, weight: .medium))
-                    .foregroundColor(.primary)
-                Text(description)
-                    .font(.system(.caption))
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
 
 
 // 空状态视图

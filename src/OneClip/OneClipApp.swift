@@ -16,11 +16,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var hasShownPermissionAlert = false
     private var isCheckingPermissions = false
     private var statusItemMonitorTimer: Timer?
-    private var permissionMonitorTimer: Timer?
     private var wasAccessibilityDenied = false
     private var cancellables = Set<AnyCancellable>()
     var windowManager: WindowManager?
     private var permissionGuideWindow: NSWindow?
+    private var aboutWindow: NSWindow?
     private var permissionGuideCloseObserver: NSObjectProtocol?
     private var permissionGuideCompletionWorkItem: DispatchWorkItem?
     
@@ -80,6 +80,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 立即设置全局快捷键
         setupGlobalHotkey()
+
+        // 快捷键不依赖辅助功能权限；权限仅用于“直接粘贴”。启动后独立检查并按需引导。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.requestAccessibilityPermissions()
+        }
         
         // 延迟检查应用策略，初始启动时隐藏Dock图标
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
@@ -746,13 +751,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         settingsItem.toolTip = "打开应用设置 (Cmd+,)"
         menu.addItem(settingsItem)
         
-        // 添加权限测试菜单项（调试用）
-        #if DEBUG
         menu.addItem(NSMenuItem.separator())
-        let permissionTestItem = NSMenuItem(title: "辅助功能授权", action: #selector(testPermissionDialog), keyEquivalent: "")
-        permissionTestItem.toolTip = "调试功能：测试辅助功能权限弹窗"
-        menu.addItem(permissionTestItem)
-        #endif
+        let permissionManager = AccessibilityPermissionManager.shared
+        let permissionItem = NSMenuItem(
+            title: permissionManager.hasPermission ? "辅助功能：已授权" : "开启直接粘贴",
+            action: #selector(showAccessibilityPermissionGuide),
+            keyEquivalent: ""
+        )
+        permissionItem.toolTip = permissionManager.hasPermission
+            ? "查看辅助功能授权状态"
+            : "授权后可将历史内容直接粘贴到当前光标位置"
+        permissionItem.image = NSImage(
+            systemSymbolName: permissionManager.hasPermission ? "checkmark.shield.fill" : "accessibility",
+            accessibilityDescription: "辅助功能授权"
+        )
+        menu.addItem(permissionItem)
         
         let aboutItem = NSMenuItem(title: "关于 PasteLight", action: #selector(showAbout), keyEquivalent: "")
         if let aboutIcon = NSImage(systemSymbolName: "info.circle.fill", accessibilityDescription: "About") {
@@ -1572,569 +1585,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     @objc private func showAbout(_ sender: AnyObject?) {
-        // 创建自定义关于窗口
-        let aboutWindow = createAboutWindow()
-        aboutWindow.makeKeyAndOrderFront(nil)
-        aboutWindow.center()
-        
-        // 设置窗口级别
-        aboutWindow.level = .floating
-        
-        // 激活应用以确保窗口显示在最前面
+        presentAboutWindow()
+    }
+
+    func presentAboutWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        let window = aboutWindow ?? createAboutWindow()
+        aboutWindow = window
+        window.center()
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    
+
     private func createAboutWindow() -> NSWindow {
-        let windowSize = NSSize(width: 560, height: 700)
+        let windowSize = NSSize(width: 560, height: 520)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.borderless, .fullSizeContentView],
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        
+
+        window.title = "关于 PasteLight"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
-        window.backgroundColor = NSColor.clear
+        window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        
-        // 创建主容器视图
-        let containerView = NSView(frame: NSRect(origin: .zero, size: windowSize))
-        containerView.wantsLayer = true
-        
-        // 创建简洁的纯色背景
-        let backgroundLayer = CALayer()
-        backgroundLayer.frame = containerView.bounds
-        backgroundLayer.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.98).cgColor
-        backgroundLayer.cornerRadius = 24
-        containerView.layer?.addSublayer(backgroundLayer)
-        
-        // 添加现代化边框
-        let borderLayer = CALayer()
-        borderLayer.frame = containerView.bounds
-        borderLayer.borderColor = NSColor.separatorColor.withAlphaComponent(0.25).cgColor
-        borderLayer.borderWidth = 1.5
-        borderLayer.cornerRadius = 24
-        containerView.layer?.addSublayer(borderLayer)
-        
-        // 添加内部高光效果
-        let highlightLayer = CALayer()
-        highlightLayer.frame = CGRect(x: 1, y: 1, width: windowSize.width - 2, height: windowSize.height - 2)
-        highlightLayer.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-        highlightLayer.borderWidth = 1
-        highlightLayer.cornerRadius = 23
-        containerView.layer?.addSublayer(highlightLayer)
-        
-        // 应用标题 - 居中显示在顶部
-        let titleLabel = NSTextField(labelWithString: "PasteLight")
-        titleLabel.frame = NSRect(x: 20, y: 620, width: windowSize.width - 40, height: 42)
-        titleLabel.font = NSFont.systemFont(ofSize: 36, weight: .bold)
-        titleLabel.alignment = .center
-        titleLabel.textColor = NSColor.labelColor
-        titleLabel.isBezeled = false
-        titleLabel.drawsBackground = false
-        titleLabel.isEditable = false
-        titleLabel.isSelectable = false
-        containerView.addSubview(titleLabel)
-        
-        // 应用图标容器 - 简洁设计
-        let iconSize: CGFloat = 96
-        let iconContainer = NSView(frame: NSRect(
-            x: (windowSize.width - iconSize) / 2,
-            y: 510,
-            width: iconSize,
-            height: iconSize
-        ))
-        iconContainer.wantsLayer = true
-        iconContainer.layer?.cornerRadius = 22
-        iconContainer.layer?.shadowColor = NSColor.black.cgColor
-        iconContainer.layer?.shadowOpacity = 0.15
-        iconContainer.layer?.shadowOffset = CGSize(width: 0, height: 4)
-        iconContainer.layer?.shadowRadius = 8
-        
-        // 应用图标
-        let iconImageView = NSImageView(frame: NSRect(x: 0, y: 0, width: 96, height: 96))
-        if let appIcon = NSApp.applicationIconImage {
-            iconImageView.image = appIcon
-        }
-        iconImageView.imageScaling = .scaleProportionallyUpOrDown
-        iconImageView.wantsLayer = true
-        iconImageView.layer?.cornerRadius = 22
-        iconImageView.layer?.masksToBounds = true
-        
-        iconContainer.addSubview(iconImageView)
-        containerView.addSubview(iconContainer)
-        
-        // 副标题 - 简洁设计
-        let subtitleLabel = NSTextField(labelWithString: "macOS 轻量剪贴板")
-        subtitleLabel.frame = NSRect(x: 20, y: 465, width: windowSize.width - 40, height: 28)
-        subtitleLabel.font = NSFont.systemFont(ofSize: 18, weight: .medium)
-        subtitleLabel.alignment = .center
-        subtitleLabel.textColor = NSColor.secondaryLabelColor
-        subtitleLabel.isBezeled = false
-        subtitleLabel.drawsBackground = false
-        subtitleLabel.isEditable = false
-        subtitleLabel.isSelectable = false
-        containerView.addSubview(subtitleLabel)
-        
-        // 版本信息卡片 - 独立设计，更好的视觉平衡
-        let versionCard = createSimpleCard(frame: NSRect(x: 60, y: 380, width: 210, height: 85))
-        
-        // 版本信息容器 - 居中布局
-        let versionContainer = NSView(frame: NSRect(x: 20, y: 20, width: 180, height: 50))
-        
-        // 版本图标 - 更精美的设计
-        let versionIcon = NSTextField(labelWithString: "版本")
-        versionIcon.frame = NSRect(x: 0, y: 15, width: 30, height: 30)
-        versionIcon.font = NSFont.systemFont(ofSize: 22)
-        versionIcon.isBezeled = false
-        versionIcon.drawsBackground = false
-        versionIcon.isEditable = false
-        versionIcon.isSelectable = false
-        versionContainer.addSubview(versionIcon)
-        
-        // 版本信息垂直布局
-        let versionInfoContainer = NSView(frame: NSRect(x: 40, y: 8, width: 140, height: 40))
-        
-        // 版本标签
-        let versionLabel = NSTextField(labelWithString: "版本")
-        versionLabel.frame = NSRect(x: 0, y: 24, width: 140, height: 16)
-        versionLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        versionLabel.textColor = NSColor.secondaryLabelColor
-        versionLabel.isBezeled = false
-        versionLabel.drawsBackground = false
-        versionLabel.isEditable = false
-        versionLabel.isSelectable = false
-        versionInfoContainer.addSubview(versionLabel)
-        
-        // 版本号
-        let versionNumber = NSTextField(
-            labelWithString: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+        window.isMovableByWindowBackground = true
+        window.level = .floating
+        window.collectionBehavior = [.moveToActiveSpace, .transient]
+        window.contentView = NSHostingView(
+            rootView: PasteLightAboutView(isStandalone: true) { [weak window] in
+                window?.close()
+            }
         )
-        versionNumber.frame = NSRect(x: 0, y: 4, width: 140, height: 22)
-        versionNumber.font = NSFont.systemFont(ofSize: 18, weight: .bold)
-        versionNumber.textColor = NSColor.systemBlue
-        versionNumber.isBezeled = false
-        versionNumber.drawsBackground = false
-        versionNumber.isEditable = false
-        versionNumber.isSelectable = false
-        versionInfoContainer.addSubview(versionNumber)
-        
-        versionContainer.addSubview(versionInfoContainer)
-        versionCard.addSubview(versionContainer)
-        containerView.addSubview(versionCard)
-        
-        // 作者信息卡片 - 独立设计，与版本卡片对称
-        let authorCard = createSimpleCard(frame: NSRect(x: 290, y: 380, width: 210, height: 85))
-        
-        // 作者信息容器 - 居中布局
-        let authorContainer = NSView(frame: NSRect(x: 20, y: 20, width: 180, height: 50))
-        
-        // 作者图标 - 更精美的设计
-        let authorIcon = NSTextField(labelWithString: "作者")
-        authorIcon.frame = NSRect(x: 0, y: 15, width: 30, height: 30)
-        authorIcon.font = NSFont.systemFont(ofSize: 22)
-        authorIcon.isBezeled = false
-        authorIcon.drawsBackground = false
-        authorIcon.isEditable = false
-        authorIcon.isSelectable = false
-        authorContainer.addSubview(authorIcon)
-        
-        // 作者信息垂直布局
-        let authorInfoContainer = NSView(frame: NSRect(x: 40, y: 8, width: 140, height: 40))
-        
-        // 作者标签
-        let authorTitleLabel = NSTextField(labelWithString: "作者")
-        authorTitleLabel.frame = NSRect(x: 0, y: 24, width: 140, height: 16)
-        authorTitleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        authorTitleLabel.textColor = NSColor.secondaryLabelColor
-        authorTitleLabel.isBezeled = false
-        authorTitleLabel.drawsBackground = false
-        authorTitleLabel.isEditable = false
-        authorTitleLabel.isSelectable = false
-        authorInfoContainer.addSubview(authorTitleLabel)
-        
-        // 作者名称 - 添加点击跳转功能
-        let authorName = NSButton(frame: NSRect(x: 0, y: 4, width: 140, height: 22))
-        authorName.title = "Wcowin"
-        authorName.font = NSFont.systemFont(ofSize: 18, weight: .bold)
-        authorName.isBordered = false
-        authorName.target = self
-        authorName.action = #selector(openWcowinWebsite)
-        authorName.wantsLayer = true
-        authorName.layer?.cornerRadius = 6
-        
-        let authorAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .bold),
-            .foregroundColor: NSColor.systemPurple,
-            .underlineStyle: NSUnderlineStyle.single.rawValue
-        ]
-        authorName.attributedTitle = NSAttributedString(string: "Wcowin", attributes: authorAttributes)
-        authorInfoContainer.addSubview(authorName)
-        
-        authorContainer.addSubview(authorInfoContainer)
-        authorCard.addSubview(authorContainer)
-        containerView.addSubview(authorCard)
-        
-        // 联系方式信息卡片 - 重新设计，更好的视觉层次
-        let contactCard = createSimpleCard(frame: NSRect(x: 60, y: 270, width: 440, height: 95))
-        
-        // 联系方式标题 - 居中设计，增加视觉重点
-        let contactTitle = NSTextField(labelWithString: "💬 联系方式")
-        contactTitle.frame = NSRect(x: 25, y: 70, width: 390, height: 22)
-        contactTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
-        contactTitle.textColor = NSColor.labelColor
-        contactTitle.isBezeled = false
-        contactTitle.drawsBackground = false
-        contactTitle.isEditable = false
-        contactTitle.isSelectable = false
-        contactCard.addSubview(contactTitle)
-        
-        // 邮箱信息容器 - 重新布局，更好的对齐
-        let emailContainer = NSView(frame: NSRect(x: 35, y: 40, width: 370, height: 25))
-        
-        // 邮箱图标 - 更大更清晰
-        let emailIcon = NSTextField(labelWithString: "邮箱")
-        emailIcon.frame = NSRect(x: 0, y: 4, width: 24, height: 24)
-        emailIcon.font = NSFont.systemFont(ofSize: 18)
-        emailIcon.isBezeled = false
-        emailIcon.drawsBackground = false
-        emailIcon.isEditable = false
-        emailIcon.isSelectable = false
-        emailContainer.addSubview(emailIcon)
-        
-        // 邮箱信息 - 更好的视觉效果
-        let emailInfo = NSButton(frame: NSRect(x: 35, y: 2, width: 200, height: 28))
-        emailInfo.title = "wcowin@qq.com"
-        emailInfo.font = NSFont.systemFont(ofSize: 15, weight: .medium)
-        emailInfo.isBordered = false
-        emailInfo.target = self
-        emailInfo.action = #selector(openEmail)
-        emailInfo.wantsLayer = true
-        emailInfo.layer?.cornerRadius = 8
-        emailInfo.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.1).cgColor
-        
-        let emailAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
-            .foregroundColor: NSColor.systemBlue
-        ]
-        emailInfo.attributedTitle = NSAttributedString(string: "wcowin@qq.com", attributes: emailAttributes)
-        emailContainer.addSubview(emailInfo)
-        contactCard.addSubview(emailContainer)
-        
-        // GitHub信息容器 - 重新布局，与邮箱对齐
-        let githubContainer = NSView(frame: NSRect(x: 35, y: 10, width: 370, height: 25))
-        
-        // GitHub图标 - 更大更清晰
-        let githubIcon = NSTextField(labelWithString: "GitHub")
-        githubIcon.frame = NSRect(x: 0, y: 4, width: 24, height: 24)
-        githubIcon.font = NSFont.systemFont(ofSize: 18)
-        githubIcon.isBezeled = false
-        githubIcon.drawsBackground = false
-        githubIcon.isEditable = false
-        githubIcon.isSelectable = false
-        githubContainer.addSubview(githubIcon)
-        
-        // GitHub信息 - 更好的视觉效果
-        let githubInfo = NSButton(frame: NSRect(x: 35, y: 2, width: 280, height: 28))
-        githubInfo.title = "github.com/AceInAndroid/OneClip"
-        githubInfo.font = NSFont.systemFont(ofSize: 15, weight: .medium)
-        githubInfo.isBordered = false
-        githubInfo.target = self
-        githubInfo.action = #selector(openGitHub)
-        githubInfo.wantsLayer = true
-        githubInfo.layer?.cornerRadius = 8
-        githubInfo.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.1).cgColor
-        
-        let githubAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
-            .foregroundColor: NSColor.systemGreen
-        ]
-        githubInfo.attributedTitle = NSAttributedString(string: "github.com/AceInAndroid/OneClip", attributes: githubAttributes)
-        githubContainer.addSubview(githubInfo)
-        contactCard.addSubview(githubContainer)
-        
-        containerView.addSubview(contactCard)
-        
-        // 功能特性卡片 - 简洁设计，增加间距
-        let featuresCard = createSimpleCard(frame: NSRect(x: 60, y: 160, width: 440, height: 95))
-        
-        // 功能特性标题 - 增加内边距
-        let featuresTitle = NSTextField(labelWithString: "✨ 核心功能")
-        featuresTitle.frame = NSRect(x: 28, y: 75, width: 400, height: 22)
-        featuresTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
-        featuresTitle.textColor = NSColor.labelColor
-        featuresTitle.isBezeled = false
-        featuresTitle.drawsBackground = false
-        featuresTitle.isEditable = false
-        featuresTitle.isSelectable = false
-        featuresCard.addSubview(featuresTitle)
-        
-        // 功能列表 - 更好的排版
-        let features = [
-            "• 智能剪贴板历史记录管理",
-            "• 支持文本、图片、文件等多种格式",
-            "• 收藏功能，重要内容永不丢失",
-            "• 实时搜索和分类筛选"
-        ]
-        
-        for (index, feature) in features.enumerated() {
-            let featureLabel = NSTextField(labelWithString: feature)
-            featureLabel.frame = NSRect(x: 32, y: 50 - index * 16, width: 420, height: 16)
-            featureLabel.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-            featureLabel.textColor = NSColor.secondaryLabelColor
-            featureLabel.isBezeled = false
-            featureLabel.drawsBackground = false
-            featureLabel.isEditable = false
-            featureLabel.isSelectable = false
-            featuresCard.addSubview(featureLabel)
-        }
-        
-        containerView.addSubview(featuresCard)
-        
-        // 快捷键卡片 - 简洁设计，增加间距
-        let shortcutsCard = createSimpleCard(frame: NSRect(x: 60, y: 50, width: 440, height: 95))
-        
-        // 快捷键标题 - 增加内边距
-        let shortcutsTitle = NSTextField(labelWithString: "快捷键")
-        shortcutsTitle.frame = NSRect(x: 28, y: 70, width: 400, height: 22)
-        shortcutsTitle.font = NSFont.systemFont(ofSize: 17, weight: .bold)
-        shortcutsTitle.textColor = NSColor.labelColor
-        shortcutsTitle.isBezeled = false
-        shortcutsTitle.drawsBackground = false
-        shortcutsTitle.isEditable = false
-        shortcutsTitle.isSelectable = false
-        shortcutsCard.addSubview(shortcutsTitle)
-        
-        // 快捷键列表 - 现代化设计
-        let shortcuts = [
-            "Cmd + Ctrl + V - 显示/隐藏剪贴板窗口",
-            "Cmd + Q - 退出应用"
-        ]
-        
-        for (index, shortcut) in shortcuts.enumerated() {
-            let shortcutLabel = NSTextField(labelWithString: shortcut)
-            shortcutLabel.frame = NSRect(x: 32, y: 45 - index * 20, width: 420, height: 16)
-            shortcutLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-            shortcutLabel.textColor = NSColor.secondaryLabelColor
-            shortcutLabel.isBezeled = false
-            shortcutLabel.drawsBackground = false
-            shortcutLabel.isEditable = false
-            shortcutLabel.isSelectable = false
-            shortcutsCard.addSubview(shortcutLabel)
-        }
-        
-        containerView.addSubview(shortcutsCard)
-        
-        // 底部标语 - 简洁设计
-        let sloganLabel = NSTextField(labelWithString: "让您的剪贴板更智能，工作更高效！")
-        sloganLabel.frame = NSRect(x: 20, y: 20, width: windowSize.width - 40, height: 28)
-        sloganLabel.font = NSFont.systemFont(ofSize: 17, weight: .medium)
-        sloganLabel.alignment = .center
-        sloganLabel.textColor = NSColor.systemBlue
-        sloganLabel.isBezeled = false
-        sloganLabel.drawsBackground = false
-        sloganLabel.isEditable = false
-        sloganLabel.isSelectable = false
-        
-        containerView.addSubview(sloganLabel)
-        
-        // 确定按钮已删除 - 用户可以通过右上角关闭按钮或点击窗口外部关闭
-        
-        // 添加关闭按钮（右上角）- 简洁设计
-        let closeButtonSize: CGFloat = 32
-        let closeButtonMargin: CGFloat = 20
-        let closeButton = NSButton(frame: NSRect(
-            x: windowSize.width - closeButtonSize - closeButtonMargin,
-            y: windowSize.height - closeButtonSize - closeButtonMargin,
-            width: closeButtonSize,
-            height: closeButtonSize
-        ))
-        closeButton.title = ""
-        closeButton.isBordered = false
-        closeButton.target = self
-        closeButton.action = #selector(closeAboutWindow(_:))
-        closeButton.wantsLayer = true
-        closeButton.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.1).cgColor
-        closeButton.layer?.cornerRadius = closeButtonSize / 2
-        closeButton.layer?.borderColor = NSColor.systemRed.withAlphaComponent(0.2).cgColor
-        closeButton.layer?.borderWidth = 1
-        
-        let trackingArea = NSTrackingArea(
-            rect: closeButton.bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow],
-            owner: closeButton,
-            userInfo: nil
-        )
-        closeButton.addTrackingArea(trackingArea)
-        
-        // 关闭按钮图标 - 简洁设计
-        let closeIcon = NSTextField(labelWithString: "✕")
-        let closeIconSize: CGFloat = 16
-        closeIcon.frame = NSRect(
-            x: (closeButtonSize - closeIconSize) / 2,
-            y: (closeButtonSize - closeIconSize) / 2 - 1,
-            width: closeIconSize,
-            height: closeIconSize
-        )
-        closeIcon.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        closeIcon.textColor = NSColor.systemRed
-        closeIcon.isBezeled = false
-        closeIcon.drawsBackground = false
-        closeIcon.isEditable = false
-        closeIcon.isSelectable = false
-        closeIcon.alignment = .center
-        
-        closeButton.addSubview(closeIcon)
-        containerView.addSubview(closeButton)
-        
-        window.contentView = containerView
+
         return window
     }
-    
-    // 创建简洁卡片的辅助方法
-    private func createSimpleCard(frame: NSRect) -> NSView {
-        let card = NSView(frame: frame)
-        card.wantsLayer = true
-        
-        // 简洁的纯色背景
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
-        card.layer?.cornerRadius = 12
-        
-        // 简单的边框
-        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
-        card.layer?.borderWidth = 1
-        
-        // 轻微的阴影
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.08
-        card.layer?.shadowOffset = CGSize(width: 0, height: 2)
-        card.layer?.shadowRadius = 4
-        
-        return card
-    }
-    
-    // 创建现代化卡片的辅助方法
-    private func createModernCard(frame: NSRect) -> NSView {
-        let card = NSView(frame: frame)
-        card.wantsLayer = true
-        
-        // 主背景
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.8).cgColor
-        card.layer?.cornerRadius = 16
-        
-        // 添加渐变边框
-        let gradientBorder = CAGradientLayer()
-        gradientBorder.frame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        gradientBorder.colors = [
-            NSColor.systemBlue.withAlphaComponent(0.15).cgColor,
-            NSColor.systemPurple.withAlphaComponent(0.1).cgColor
-        ]
-        gradientBorder.cornerRadius = 16
-        gradientBorder.borderWidth = 1.5
-        gradientBorder.borderColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
-        card.layer?.addSublayer(gradientBorder)
-        
-        // 添加内部高光
-        let highlight = CALayer()
-        highlight.frame = CGRect(x: 1, y: 1, width: frame.width - 2, height: frame.height - 2)
-        highlight.cornerRadius = 15
-        highlight.borderWidth = 1
-        highlight.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-        card.layer?.addSublayer(highlight)
-        
-        // 添加轻微阴影
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.1
-        card.layer?.shadowOffset = CGSize(width: 0, height: 2)
-        card.layer?.shadowRadius = 8
-        
-        return card
-    }
-    
-    // 创建精美卡片的辅助方法
-    private func createPremiumCard(frame: NSRect) -> NSView {
-        let card = NSView(frame: frame)
-        card.wantsLayer = true
-        
-        // 主背景 - 更精美的渐变
-        let backgroundGradient = CAGradientLayer()
-        backgroundGradient.frame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        backgroundGradient.colors = [
-            NSColor.controlBackgroundColor.withAlphaComponent(0.95).cgColor,
-            NSColor.controlBackgroundColor.withAlphaComponent(0.85).cgColor
-        ]
-        backgroundGradient.startPoint = CGPoint(x: 0, y: 0)
-        backgroundGradient.endPoint = CGPoint(x: 0, y: 1)
-        backgroundGradient.cornerRadius = 18
-        card.layer?.addSublayer(backgroundGradient)
-        
-        // 添加精美的边框渐变
-        let borderGradient = CAGradientLayer()
-        borderGradient.frame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        borderGradient.colors = [
-            NSColor.systemBlue.withAlphaComponent(0.2).cgColor,
-            NSColor.systemPurple.withAlphaComponent(0.15).cgColor,
-            NSColor.systemTeal.withAlphaComponent(0.1).cgColor
-        ]
-        borderGradient.cornerRadius = 18
-        borderGradient.borderWidth = 2
-        borderGradient.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
-        card.layer?.addSublayer(borderGradient)
-        
-        // 添加内部高光效果
-        let innerHighlight = CALayer()
-        innerHighlight.frame = CGRect(x: 2, y: 2, width: frame.width - 4, height: frame.height - 4)
-        innerHighlight.cornerRadius = 16
-        innerHighlight.borderWidth = 1
-        innerHighlight.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
-        card.layer?.addSublayer(innerHighlight)
-        
-        // 添加精美的阴影
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.15
-        card.layer?.shadowOffset = CGSize(width: 0, height: 4)
-        card.layer?.shadowRadius = 12
-        
-        // 添加微妙的内阴影效果
-        let innerShadow = CALayer()
-        innerShadow.frame = CGRect(x: 1, y: 1, width: frame.width - 2, height: frame.height - 2)
-        innerShadow.cornerRadius = 17
-        innerShadow.shadowColor = NSColor.black.cgColor
-        innerShadow.shadowOpacity = 0.05
-        innerShadow.shadowOffset = CGSize(width: 0, height: -1)
-        innerShadow.shadowRadius = 2
-        card.layer?.addSublayer(innerShadow)
-        
-        return card
-    }
-    
-    @objc private func openEmail() {
-        if let url = URL(string: "mailto:wcowin@qq.com") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-    
-    @objc private func openGitHub() {
-        if let url = URL(string: "https://github.com/AceInAndroid/OneClip") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-    
-    @objc private func openWcowinWebsite() {
-        if let url = URL(string: "https://wcowin.work/") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-    
-    @objc private func closeAboutWindow(_ sender: NSButton) {
-        sender.window?.close()
-    }
-    
-    
-    // 注意：toggleDock 方法已移除，现在使用智能Dock控制
-    // 通过 toggleWindow 和 hideWindowAndDock 方法来控制Dock显示状态
-    
+
+
     @objc private func quitApp(_ sender: AnyObject?) {
         performActualQuit()
     }
@@ -2158,14 +1654,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     // MARK: - 调试和测试方法
     
-    @objc private func testPermissionDialog() {
-        print("[TEST] 用户点击了权限测试菜单")
-        // 强制激活应用到最前面
+    @objc private func showAccessibilityPermissionGuide() {
         NSApp.activate(ignoringOtherApps: true)
-        
-        // 强制刷新权限检查
+
         AccessibilityPermissionManager.shared.checkPermissionAsync { _ in
-            self.forceShowPermissionDialog()
+            self.showPermissionAlert(
+                isFirstLaunch: false,
+                allowsGrantedState: true,
+                ignoresSuppression: true,
+                ignoresCooldown: true
+            )
         }
     }
     
@@ -2368,88 +1866,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     private func requestAccessibilityPermissions() {
-        print("[DEBUG] requestAccessibilityPermissions 开始执行")
-        
-        // 防止重复检查权限
-        if isCheckingPermissions {
-            print("[DEBUG] 权限检查正在进行中，跳过重复检查")
-            return
-        }
-        
-        // 检查用户是否选择了不再提示（这是唯一应该阻止弹窗的条件）
-        let disablePrompt = UserDefaults.standard.bool(forKey: "DisableAccessibilityPrompt")
-        print("[DEBUG] DisableAccessibilityPrompt 设置: \(disablePrompt)")
-        if disablePrompt {
-            print("[DEBUG] 用户已选择不再提示辅助功能权限，退出")
-            return
-        }
-        
-        print("[DEBUG] 开始权限检查流程")
+        guard !isCheckingPermissions else { return }
+
         isCheckingPermissions = true
-        defer { 
-            isCheckingPermissions = false
-            print("[DEBUG] 权限检查流程结束")
-        }
-        
-        // 使用优化的权限检查
-        checkPermissionAsync { accessEnabled in
-            print("[DEBUG] 权限检查结果: \(accessEnabled)")
-            if !accessEnabled {
-                print("[DEBUG] 需要辅助功能权限，准备显示弹窗")
-                // 需要辅助功能权限
-                self.hasShownPermissionAlert = true
-                self.wasAccessibilityDenied = true
-                
-                // 获取设置管理器
-                let settingsManager = SettingsManager.shared
-                print("[DEBUG] isFirstLaunch: \(settingsManager.isFirstLaunch)")
-                
-                // 确保状态栏图标在权限检查期间保持可见
-                DispatchQueue.main.async {
-                    self.verifyAndFixStatusBarItem()
-                }
-                
-                // 启动权限监控
-                self.startPermissionMonitoring()
-                
-                // 延迟显示权限提示，避免影响状态栏显示
-                let delay = settingsManager.isFirstLaunch ? 2.0 : 0.5 // 减少延迟时间
-                print("[DEBUG] 将在 \(delay) 秒后显示权限弹窗")
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    print("[DEBUG] 延迟时间到，开始最终权限检查")
-                    // 简化权限弹窗条件检查
-                    self.checkPermissionAsync { hasPermission in
-                        print("[DEBUG] 最终权限检查结果: \(hasPermission)")
-                        if !hasPermission {
-                            print("[DEBUG] 准备显示权限弹窗，isFirstLaunch: \(settingsManager.isFirstLaunch)")
-                            // 直接显示权限弹窗，不进行过多的状态检查
-                            self.showPermissionAlert(isFirstLaunch: settingsManager.isFirstLaunch)
-                        } else {
-                            print("[DEBUG] 权限已获得，不显示弹窗")
-                        }
-                        
-                        // 权限弹窗后再次确保状态栏图标可见
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            self.verifyAndFixStatusBarItem()
-                        }
-                    }
-                }
-            } else {
-                // 辅助功能权限已获得
-                print("[DEBUG] 辅助功能权限已获得，不需要显示弹窗")
+        AccessibilityPermissionManager.shared.checkPermissionAsync { [weak self] accessEnabled in
+            guard let self else { return }
+            self.isCheckingPermissions = false
+
+            if accessEnabled {
                 self.hasShownPermissionAlert = false
                 self.wasAccessibilityDenied = false
-                
-                // 如果权限已获得，清除"不再提示"设置，以便将来权限丢失时能再次提醒
-                UserDefaults.standard.removeObject(forKey: "DisableAccessibilityPrompt")
-                
-                // 停止权限监控
+                AccessibilityPermissionManager.shared.setPromptSuppressed(false)
                 self.stopPermissionMonitoring()
+                return
+            }
+
+            self.wasAccessibilityDenied = true
+            guard !AccessibilityPermissionManager.shared.isPromptSuppressed else {
+                return
+            }
+
+            let settingsManager = SettingsManager.shared
+            let delay = settingsManager.isFirstLaunch ? 1.2 : 0.35
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                AccessibilityPermissionManager.shared.checkPermissionAsync { [weak self] hasPermission in
+                    guard let self, !hasPermission else { return }
+                    self.hasShownPermissionAlert = true
+                    self.startPermissionMonitoring()
+                    self.showPermissionAlert(isFirstLaunch: settingsManager.isFirstLaunch)
+                }
             }
         }
     }
-    
-    private func showPermissionAlert(isFirstLaunch: Bool = false) {
+
+
+    private func showPermissionAlert(
+        isFirstLaunch: Bool = false,
+        allowsGrantedState: Bool = false,
+        ignoresSuppression: Bool = false,
+        ignoresCooldown: Bool = false
+    ) {
         print("[DEBUG] showPermissionAlert 开始执行，isFirstLaunch: \(isFirstLaunch)")
         
         // 全局弹窗状态检查
@@ -2465,7 +1922,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 冷却时间检查
         let currentTime = Date()
         let timeSinceLastDialog = currentTime.timeIntervalSince(AppDelegate.lastPermissionDialogTime)
-        if timeSinceLastDialog < AppDelegate.permissionDialogCooldown {
+        if !ignoresCooldown && timeSinceLastDialog < AppDelegate.permissionDialogCooldown {
             print("[DEBUG] 权限弹窗冷却时间未到（剩余\(Int(AppDelegate.permissionDialogCooldown - timeSinceLastDialog))秒），跳过弹窗")
             return
         }
@@ -2483,15 +1940,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             // 基本权限检查：如果已有权限则不显示弹窗
             let currentPermission = AccessibilityPermissionManager.shared.checkPermissionSync()
             print("[DEBUG] 当前权限状态: \(currentPermission)")
-            guard !currentPermission else {
+            guard !currentPermission || allowsGrantedState else {
                 print("[DEBUG] 权限已获得，取消弹窗显示")
                 return
             }
             
             // 检查用户是否选择了不再提示
-            let disablePrompt = UserDefaults.standard.bool(forKey: "DisableAccessibilityPrompt")
+            let disablePrompt = AccessibilityPermissionManager.shared.isPromptSuppressed
             print("[DEBUG] 不再提示设置: \(disablePrompt), isFirstLaunch: \(isFirstLaunch)")
-            if !isFirstLaunch && disablePrompt {
+            if !ignoresSuppression && !isFirstLaunch && disablePrompt {
                 print("[DEBUG] 用户已选择不再提示，取消弹窗")
                 return
             }
@@ -2503,7 +1960,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 print("[DEBUG] 有其他模态窗口，延迟1秒后重试")
                 // 有其他模态窗口，延迟显示
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.showPermissionAlert(isFirstLaunch: isFirstLaunch)
+                    self.showPermissionAlert(
+                        isFirstLaunch: isFirstLaunch,
+                        allowsGrantedState: allowsGrantedState,
+                        ignoresSuppression: ignoresSuppression,
+                        ignoresCooldown: ignoresCooldown
+                    )
                 }
                 return
             }
@@ -2526,7 +1988,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     self?.permissionGuideWindow?.close()
                 },
                 onDisablePrompt: isFirstLaunch ? nil : { [weak self] in
-                    UserDefaults.standard.set(true, forKey: "DisableAccessibilityPrompt")
+                    AccessibilityPermissionManager.shared.setPromptSuppressed(true)
                     self?.permissionGuideWindow?.close()
                 }
             )
@@ -2560,8 +2022,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 self?.permissionGuideDidClose()
             }
 
-            self.wasAccessibilityDenied = true
-            self.startPermissionMonitoring()
+            self.wasAccessibilityDenied = !currentPermission
+            if currentPermission {
+                self.stopPermissionMonitoring()
+            } else {
+                self.startPermissionMonitoring()
+            }
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
             print("[DEBUG] 权限引导窗口已显示")
@@ -2618,7 +2084,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         hasShownPermissionAlert = false
         
         // 清除"不再提示"设置（仅用于调试）
-        UserDefaults.standard.removeObject(forKey: "DisableAccessibilityPrompt")
+        AccessibilityPermissionManager.shared.setPromptSuppressed(false)
         
         // 立即检查权限
         checkPermissionAsync { hasPermission in
@@ -2638,7 +2104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         print("[DEBUG] 强制显示权限弹窗（调试模式）")
         
         // 清除所有阻止弹窗的设置
-        UserDefaults.standard.removeObject(forKey: "DisableAccessibilityPrompt")
+        AccessibilityPermissionManager.shared.setPromptSuppressed(false)
         isCheckingPermissions = false
         hasShownPermissionAlert = false
         
@@ -2649,56 +2115,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 直接显示权限弹窗
         let settingsManager = SettingsManager.shared
         DispatchQueue.main.async {
-            self.showPermissionAlert(isFirstLaunch: settingsManager.isFirstLaunch)
+            self.showPermissionAlert(
+                isFirstLaunch: settingsManager.isFirstLaunch,
+                allowsGrantedState: true,
+                ignoresSuppression: true,
+                ignoresCooldown: true
+            )
         }
     }
     
     // MARK: - 权限监控机制
     
     private func startPermissionMonitoring() {
-        // 启动辅助功能权限监控...
-        
-        // 停止现有的监控
-        stopPermissionMonitoring()
-        
-        // 优化监控间隔：减少到2秒，减少延迟
-        permissionMonitorTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.checkPermissionStatus()
-        }
+        AccessibilityPermissionManager.shared.startMonitoring()
     }
     
     private func stopPermissionMonitoring() {
-        permissionMonitorTimer?.invalidate()
-        permissionMonitorTimer = nil
-        // 停止辅助功能权限监控
-    }
-    
-    private func checkPermissionStatus() {
-        // 使用优化的权限检查
-        checkPermissionAsync { currentAccessEnabled in
-            // 如果之前没有权限，现在有了权限
-            if self.wasAccessibilityDenied && currentAccessEnabled {
-                // 检测到辅助功能权限已授权!
-                
-                // 重置状态
-                self.wasAccessibilityDenied = false
-                self.hasShownPermissionAlert = false
-                
-                // 停止监控
-                self.stopPermissionMonitoring()
-                
-                // 显示授权成功提示
-                self.showPermissionGrantedAlert()
-                
-                // 清除"不再提示"设置
-                UserDefaults.standard.removeObject(forKey: "DisableAccessibilityPrompt")
-                
-                // 重新注册全局快捷键
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.setupGlobalHotkey()
-                }
-            }
-        }
+        AccessibilityPermissionManager.shared.stopMonitoring()
     }
     
     private func showPermissionGrantedAlert() {
@@ -2855,6 +2288,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         ) { [weak self] _ in
             self?.applicationDidBecomeActive(Notification(name: NSApplication.didBecomeActiveNotification))
         }
+
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ShowAccessibilityPermissionGuide"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.showAccessibilityPermissionGuide()
+        }
+
+        AccessibilityPermissionManager.shared.$hasPermission
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] granted in
+                guard let self else { return }
+                self.updateStatusBarMenu()
+
+                guard self.wasAccessibilityDenied, granted else { return }
+
+                self.wasAccessibilityDenied = false
+                self.hasShownPermissionAlert = false
+                self.stopPermissionMonitoring()
+                AccessibilityPermissionManager.shared.setPromptSuppressed(false)
+                self.showPermissionGrantedAlert()
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    self?.setupGlobalHotkey()
+                }
+            }
+            .store(in: &cancellables)
         
         // 应用事件监听器已设置
     }
@@ -3231,6 +2693,12 @@ struct OneClipApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 600, height: 600)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("关于 PasteLight") {
+                    appDelegate.presentAboutWindow()
+                }
+            }
+
             CommandGroup(replacing: .appSettings) {
                 Button("偏好设置…") {
                     NotificationCenter.default.post(

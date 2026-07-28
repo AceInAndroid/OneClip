@@ -28,6 +28,7 @@
 		AA00004929A8B5000123456 /* FavoriteManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00004A29A8B5000123456 /* FavoriteManager.swift */; };
 		AA00005129A8B5000123456 /* UserActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005029A8B5000123456 /* UserActivityMonitor.swift */; };
 		AA00005329A8B5000123456 /* ClipboardItemRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005229A8B5000123456 /* ClipboardItemRowView.swift */; };
+		AA00005529A8B5000123456 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005429A8B5000123456 /* AboutView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,6 +54,7 @@
 		AA00004A29A8B5000123456 /* FavoriteManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteManager.swift; sourceTree = "<group>"; };
 		AA00005029A8B5000123456 /* UserActivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserActivityMonitor.swift; sourceTree = "<group>"; };
 		AA00005229A8B5000123456 /* ClipboardItemRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardItemRowView.swift; sourceTree = "<group>"; };
+		AA00005429A8B5000123456 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		AA00004829A8B5000123456 /* OneClip.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OneClip.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -88,6 +90,7 @@
 			children = (
 				AA00000029A8B4B700123456 /* OneClipApp.swift */,
 				AA00000229A8B4B700123456 /* ContentView.swift */,
+				AA00005429A8B5000123456 /* AboutView.swift */,
 				AA00005229A8B5000123456 /* ClipboardItemRowView.swift */,
 				AA00001029A8B4D200123456 /* ClipboardManager.swift */,
 				AA00001229A8B4E500123456 /* ClipboardItem.swift */,
@@ -192,6 +195,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA00000329A8B4B700123456 /* ContentView.swift in Sources */,
+				AA00005529A8B5000123456 /* AboutView.swift in Sources */,
 				AA00001129A8B4D200123456 /* ClipboardManager.swift in Sources */,
 				AA00001329A8B4E500123456 /* ClipboardItem.swift in Sources */,
 				AA00001529A8B4F800123456 /* ClipboardStore.swift in Sources */,

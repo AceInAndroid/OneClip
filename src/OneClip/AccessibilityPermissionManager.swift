@@ -13,12 +13,14 @@ class AccessibilityPermissionManager: ObservableObject {
     private var permissionCache: Bool?
     private var lastCheckTime: Date = Date(timeIntervalSince1970: 0)
     private var observers: [() -> Void] = []
+    private var pendingCompletions: [(Bool) -> Void] = []
     private var permissionTimer: Timer?
     
     // 缓存有效期：1秒（减少频繁检查）
     private let cacheValidDuration: TimeInterval = 1.0
-    // 监控间隔：优化到2秒
+    // 引导显示期间的权限监控间隔
     private let monitoringInterval: TimeInterval = 2.0
+    static let promptSuppressionDefaultsKey = "DisableAccessibilityPrompt"
     
     private init() {
         // 初始检查
@@ -29,6 +31,13 @@ class AccessibilityPermissionManager: ObservableObject {
     
     /// 异步检查权限状态（推荐使用）
     func checkPermissionAsync(completion: ((Bool) -> Void)? = nil) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                self.checkPermissionAsync(completion: completion)
+            }
+            return
+        }
+
         // 如果缓存仍有效，直接返回缓存结果
         if let cached = permissionCache,
            Date().timeIntervalSince(lastCheckTime) < cacheValidDuration {
@@ -36,11 +45,12 @@ class AccessibilityPermissionManager: ObservableObject {
             return
         }
         
-        // 防止重复检查
-        guard !isChecking else {
-            completion?(hasPermission)
-            return
+        if let completion {
+            pendingCompletions.append(completion)
         }
+
+        // 已经在检查时合并回调，避免返回可能过期的状态。
+        guard !isChecking else { return }
         
         isChecking = true
         
@@ -51,7 +61,9 @@ class AccessibilityPermissionManager: ObservableObject {
             DispatchQueue.main.async {
                 self.updatePermissionStatus(permission)
                 self.isChecking = false
-                completion?(permission)
+                let completions = self.pendingCompletions
+                self.pendingCompletions.removeAll()
+                completions.forEach { $0(permission) }
             }
         }
     }
@@ -71,13 +83,14 @@ class AccessibilityPermissionManager: ObservableObject {
     
     /// 开始监控权限变化
     func startMonitoring() {
-        stopMonitoring()
+        guard permissionTimer == nil else { return }
         
         #if DEBUG
         print("开始监控辅助功能权限（间隔: \(monitoringInterval)秒）")
         #endif
         
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+        checkPermissionAsync()
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: monitoringInterval, repeats: true) { [weak self] _ in
             self?.checkPermissionAsync()
         }
     }
@@ -100,6 +113,18 @@ class AccessibilityPermissionManager: ObservableObject {
     /// 清除所有观察者
     func clearObservers() {
         observers.removeAll()
+    }
+
+    var isPromptSuppressed: Bool {
+        UserDefaults.standard.bool(forKey: Self.promptSuppressionDefaultsKey)
+    }
+
+    func setPromptSuppressed(_ suppressed: Bool) {
+        if suppressed {
+            UserDefaults.standard.set(true, forKey: Self.promptSuppressionDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.promptSuppressionDefaultsKey)
+        }
     }
     
     /// 请求辅助功能权限（仅检查，不显示弹窗）
