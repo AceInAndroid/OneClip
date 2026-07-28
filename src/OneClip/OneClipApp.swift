@@ -1565,11 +1565,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     @objc private func showSettings(_ sender: AnyObject?) {
-        // 显示窗口在最前面
-        showMainWindowToFront()
-        
-        // 通知 ContentView 显示设置
+        // 设置使用独立的 SwiftUI Settings 窗口，不再复用剪贴板主窗口。
+        NSApp.setActivationPolicy(.regular)
         NotificationCenter.default.post(name: NSNotification.Name("ShowSettings"), object: nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     
     @objc private func showAbout(_ sender: AnyObject?) {
@@ -3226,11 +3225,31 @@ struct OneClipApp: App {
                         }
                     }
                 )
-                .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowSettings"))) { _ in
-                    // 处理设置显示通知
-                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 600, height: 600)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("偏好设置…") {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("ShowSettings"),
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
+
+        Window("OneClip 设置", id: "settings") {
+            SettingsView()
+                .environmentObject(SettingsManager.shared)
+                .environmentObject(ClipboardManager.shared)
+                .environmentObject(clipboardStore)
+                .environmentObject(windowManager)
+                .ignoresSafeArea()
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 760, height: 600)
     }
 }

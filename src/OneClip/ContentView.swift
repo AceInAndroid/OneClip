@@ -17,12 +17,12 @@ struct ContentView: View {
     @ObservedObject private var settingsManager = SettingsManager.shared
     @ObservedObject private var favoriteManager = FavoriteManager.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
     @FocusState private var isSearchFocused: Bool
     @State private var isSearchModeActive = false
     @State private var showFeedback = false
     @State private var feedbackMessage = ""
-    @State private var showSettings = false
     @State private var showShortcutsHelp = false
     @State private var selectedCategory: ContentCategory = .all
     @State private var showWelcomeMessage = false
@@ -277,7 +277,7 @@ struct ContentView: View {
             // 设置按钮
             Button(action: {
                 windowManager.temporarilyPreventAutoHide(duration: 1.0)
-                showSettings = true
+                openWindow(id: "settings")
             }) {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 16, weight: .medium))
@@ -678,9 +678,6 @@ struct ContentView: View {
             // 分类变化时重置选中状态
             selectedIndex = nil
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-        }
         .sheet(isPresented: $showShortcutsHelp) {
             ShortcutsHelpView {
                 showShortcutsHelp = false
@@ -713,16 +710,12 @@ struct ContentView: View {
         } message: {
             Text("确定要删除这个剪贴板项目吗？此操作无法撤销。")
         }
-        .onChange(of: showSettings) {
-            // 当设置面板显示时防止自动隐藏
-            windowManager.setPreventAutoHide(showSettings)
-        }
         .onChange(of: showShortcutsHelp) {
             // 当快捷键帮助面板显示时防止自动隐藏
             windowManager.setPreventAutoHide(showShortcutsHelp)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowSettings"))) { _ in
-            showSettings = true
+            openWindow(id: "settings")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ActivateSearchField"))) { _ in
             activateSearchMode()
@@ -740,14 +733,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("themeChanged"))) { notification in
             // 响应主题变更
             // 主题变更由 SettingsManager 处理，这里只需要记录日志
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CloseSettingsPanel"))) { _ in
-            // 响应关闭设置面板的通知
-            // 收到关闭设置面板通知
-            if showSettings {
-                showSettings = false
-                // 设置面板已关闭
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ShowFavorites"))) { _ in
             // 响应显示收藏夹的通知
@@ -871,14 +856,13 @@ struct ContentView: View {
     // MARK: - 应用内快捷键处理
 
     private var isKeyboardInteractionBlocked: Bool {
-        showSettings
-            || showShortcutsHelp
+        showShortcutsHelp
             || showClearAllConfirmation
             || showDeleteConfirmation
     }
 
     private func handleMonitoredNumberKey(_ number: Int) -> Bool {
-        guard !showSettings, !showShortcutsHelp else { return false }
+        guard !showShortcutsHelp else { return false }
 
         switch handleNumberKey(number) {
         case .handled:
@@ -891,7 +875,7 @@ struct ContentView: View {
     }
 
     private func handleSearchShortcut() -> Bool {
-        guard !showSettings, !showShortcutsHelp else { return false }
+        guard !showShortcutsHelp else { return false }
 
         activateSearchMode()
         return true
@@ -3024,6 +3008,7 @@ struct SettingsView: View {
     @State private var alertMessage = ""
     @State private var alertTitle = ""
     @State private var selectedTab = 0
+    @State private var settingsWindow: NSWindow?
     
     // 存储管理相关状态
     @State private var storageInfo = ClipboardStore.StorageInfo(
@@ -3031,8 +3016,6 @@ struct SettingsView: View {
         totalSize: 0,
         cachePath: ""
     )
-    
-    @Environment(\.presentationMode) var presentationMode
     
     // 静态样式缓存
     private static let titleGradient = LinearGradient(
@@ -3075,14 +3058,32 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             // 左侧导航栏 - 简化设计
             VStack(spacing: 0) {
-                // 简化的标题区域
-                VStack(spacing: 8) {
-                    Text("常规设置")
-                        .font(.system(.title3, design: .default, weight: .semibold))
-                        .foregroundColor(.primary)
+                // 自定义窗口标题区域，替代系统标题栏。
+                HStack(spacing: 10) {
+                    Image(systemName: "clipboard.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            Circle()
+                                .fill(Self.titleGradient)
+                                .shadow(color: .blue.opacity(0.22), radius: 8, y: 3)
+                        )
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("OneClip")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text("设置")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: 0)
                 }
-                .padding(.top, 20)
-                .padding(.bottom, 24)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 22)
                 
                 // 简化的导航选项卡
                 VStack(spacing: 2) {
@@ -3168,15 +3169,19 @@ struct SettingsView: View {
                     
                     // 关闭按钮
                     Button(action: {
-                        presentationMode.wrappedValue.dismiss()
+                        settingsWindow?.orderOut(nil)
                     }) {
                         Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .frame(width: 28, height: 28)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, height: 30)
                             .background(
                                 Circle()
-                                    .fill(.quaternary)
+                                    .fill(.thinMaterial)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(.white.opacity(0.18), lineWidth: 0.8)
+                                    )
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -3204,16 +3209,35 @@ struct SettingsView: View {
             }
         }
         .frame(width: 760, height: 600)
-        .background(
-            Rectangle()
-                .fill(.regularMaterial)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background {
+            ZStack {
+                Rectangle()
+                    .fill(.regularMaterial)
+                Self.backgroundGradient
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(.quaternary, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Self.borderGradient, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.15), radius: 20, x: 0, y: 8)
+        .shadow(color: .black.opacity(0.18), radius: 24, x: 0, y: 10)
+        .background(
+            WindowAccessor { window in
+                settingsWindow = window
+                window.titleVisibility = .hidden
+                window.titlebarAppearsTransparent = true
+                window.titlebarSeparatorStyle = .none
+                window.styleMask.formUnion([.titled, .closable, .fullSizeContentView])
+                window.standardWindowButton(.closeButton)?.isHidden = true
+                window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+                window.standardWindowButton(.zoomButton)?.isHidden = true
+                window.isMovableByWindowBackground = true
+                window.backgroundColor = .clear
+                window.isOpaque = false
+                window.hasShadow = true
+            }
+        )
         .alert(alertTitle, isPresented: $showingExportAlert) {
             Button("确定") { }
         } message: {
