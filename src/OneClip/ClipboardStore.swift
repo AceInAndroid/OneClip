@@ -97,6 +97,13 @@ class ClipboardStore: ObservableObject {
         defer { storeLock.unlock() }
         return loadItemsUnsafe()
     }
+
+    /// 一次性持久化文本清洗结果，不触碰仍被历史项目引用的富文本或图片文件。
+    func persistSanitizedHistory(_ items: [ClipboardItem]) {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        replaceItemRecordsUnsafe(items)
+    }
     
     private func loadItemsUnsafe() -> [ClipboardItem] {
         var allItems: [ClipboardItem] = []
@@ -315,6 +322,23 @@ class ClipboardStore: ObservableObject {
         
         // 为图片和文件类型处理持久化存储
         switch item.type {
+        case .text:
+            if let formattedTextData = item.data, !formattedTextData.isEmpty {
+                let dateDirectory = ensureDateDirectoryExists(for: item.timestamp)
+                let payloadURL = dateDirectory
+                    .appendingPathComponent(item.id.uuidString)
+                    .appendingPathExtension("richtext")
+
+                do {
+                    try formattedTextData.write(to: payloadURL, options: .atomic)
+                    processedItem.filePath = payloadURL.path
+                    // 富文本仅在默认粘贴或复制时按需加载，不长期占用历史列表内存。
+                    processedItem.data = nil
+                } catch {
+                    Logger.shared.warning("保存富文本格式数据失败，将保留内存数据: \(error.localizedDescription)")
+                }
+            }
+
         case .image:
             if let imageData = item.data {
                 let dateDirectory = ensureDateDirectoryExists(for: item.timestamp)
@@ -348,7 +372,6 @@ class ClipboardStore: ObservableObject {
             }
             
         default:
-            // 文本类型不需要额外处理
             break
         }
         

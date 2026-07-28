@@ -80,6 +80,17 @@ class ClipboardManager: ObservableObject {
     private var lastContentHash: String = ""
     private var lastContentTime: Date = Date.distantPast
     private let duplicateTimeWindow: TimeInterval = 0.5 // 减少到0.5秒，允许快速复制不同内容
+    private let maxFormattedTextPayloadBytes = 8 * 1024 * 1024
+
+    private struct FormattedTextPayload: Codable {
+        let version: Int
+        let rtf: Data?
+        let html: Data?
+
+        var hasContent: Bool {
+            rtf?.isEmpty == false || html?.isEmpty == false
+        }
+    }
     
     // 搜索优化
     @Published var searchText: String = "" {
@@ -497,47 +508,42 @@ class ClipboardManager: ObservableObject {
             return
         }
         
-        // 3. 检查富文本内容（带格式的文本）
+        // 3. 列表使用系统提供的纯文本。Excel 表格的制表符和换行会保留，
+        // RTF/HTML 作为默认粘贴时恢复格式的隐藏数据保存，不参与列表展示。
+        if let rawPlainText = pasteboard.string(forType: .string) {
+            let plainText = ClipboardTextSanitizer.clean(rawPlainText)
+            if !plainText.isEmpty {
+                addTextClipboardItem(
+                    content: plainText,
+                    formattedData: captureFormattedText(from: pasteboard)
+                )
+                return
+            }
+        }
+
+        // 4. 少数应用只提供 RTF，使用其可见字符串作为纯文本回退。
         if let rtfData = pasteboard.data(forType: .rtf),
-           let rtfString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
-            let plainText = rtfString.string
-            if !plainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                if !isDuplicateContent(plainText, type: ClipboardItemType.text) {
-                    addClipboardItem(content: plainText, type: ClipboardItemType.text, data: rtfData)
-                    logger.info("富文本内容已添加: \(plainText.prefix(30))")
-                } else {
-                    logger.debug("跳过重复富文本内容")
-                }
+           let attributedString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
+            let plainText = ClipboardTextSanitizer.clean(attributedString.string)
+            if !plainText.isEmpty {
+                addTextClipboardItem(
+                    content: plainText,
+                    formattedData: captureFormattedText(from: pasteboard)
+                )
                 return
             }
         }
-        
-        // 4. 检查 HTML 内容（可能包含图片链接）
-        if let htmlData = pasteboard.data(forType: .html),
-           let htmlString = String(data: htmlData, encoding: .utf8) {
-            if !htmlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // 尝试从 HTML 中提取纯文本
-                let plainText = extractPlainTextFromHTML(htmlString)
-                if !plainText.isEmpty && !isDuplicateContent(plainText, type: .text) {
-                    addClipboardItem(content: plainText, type: .text, data: htmlData)
-                    logger.info("HTML 内容已添加: \(plainText.prefix(30))")
-                } else {
-                    logger.debug("HTML 内容为空或重复")
-                }
+
+        // 5. 最后处理仅提供 HTML 的文本来源。
+        if let htmlData = pasteboard.data(forType: .html) {
+            let plainText = extractPlainTextFromHTML(htmlData)
+            if !plainText.isEmpty {
+                addTextClipboardItem(
+                    content: plainText,
+                    formattedData: captureFormattedText(from: pasteboard)
+                )
                 return
             }
-        }
-        
-        // 5. 最后检查纯文本内容
-        if let text = pasteboard.string(forType: .string), 
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if !isDuplicateContent(text, type: .text) {
-                addClipboardItem(content: text, type: .text)
-                logger.info("纯文本内容已添加: \(text.prefix(30))")
-            } else {
-                logger.debug("跳过重复纯文本内容")
-            }
-            return
         }
         
         // 6. 特殊检查：可能存在的其他数据类型
@@ -559,26 +565,87 @@ class ClipboardManager: ObservableObject {
         logger.warning("未识别的剪贴板内容类型，可用类型: \(pasteboard.types?.map { $0.rawValue } ?? [])")
     }
     
-    // 从 HTML 中提取纯文本
-    private func extractPlainTextFromHTML(_ html: String) -> String {
-        // 简单的 HTML 标签移除
-        var text = html
-        
-        // 移除常见的 HTML 标签
-        let htmlTags = [
-            "<[^>]+>", // 所有 HTML 标签
-            "&nbsp;", "&amp;", "&lt;", "&gt;", "&quot;", "&#39;", // HTML 实体
-        ]
-        
-        for pattern in htmlTags {
-            text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+    private func addTextClipboardItem(content: String, formattedData: Data?) {
+        if isDuplicateContent(content, type: .text) {
+            logger.debug("跳过重复文本内容")
+            return
         }
-        
-        // 清理多余的空白字符
-        text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        return text
+
+        addClipboardItem(content: content, type: .text, data: formattedData)
+        logger.info("文本内容已添加: \(content.prefix(30))")
+    }
+
+    private func captureFormattedText(from pasteboard: NSPasteboard) -> Data? {
+        var remainingBytes = maxFormattedTextPayloadBytes
+
+        func capturedData(for type: NSPasteboard.PasteboardType) -> Data? {
+            guard let data = pasteboard.data(forType: type),
+                  !data.isEmpty,
+                  data.count <= remainingBytes else {
+                return nil
+            }
+            remainingBytes -= data.count
+            return data
+        }
+
+        let rtfData = capturedData(for: .rtf)
+        let htmlData = capturedData(for: .html)
+        let payload = FormattedTextPayload(version: 1, rtf: rtfData, html: htmlData)
+        guard payload.hasContent else { return nil }
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return try? encoder.encode(payload)
+    }
+
+    private func formattedTextPayload(for item: ClipboardItem) -> FormattedTextPayload? {
+        guard item.type == .text else { return nil }
+
+        let data: Data?
+        if let inMemoryData = item.data, !inMemoryData.isEmpty {
+            data = inMemoryData
+        } else if let filePath = item.filePath,
+                  URL(fileURLWithPath: filePath).pathExtension == "richtext" {
+            data = try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedIfSafe)
+        } else {
+            data = nil
+        }
+
+        guard let data, !data.isEmpty else { return nil }
+
+        if let payload = try? PropertyListDecoder().decode(FormattedTextPayload.self, from: data),
+           payload.hasContent {
+            return payload
+        }
+
+        // Backward compatibility for history created before the structured payload format.
+        if NSAttributedString(rtf: data, documentAttributes: nil) != nil {
+            return FormattedTextPayload(version: 0, rtf: data, html: nil)
+        }
+        if let html = String(data: data, encoding: .utf8), html.range(of: "<html", options: .caseInsensitive) != nil {
+            return FormattedTextPayload(version: 0, rtf: nil, html: data)
+        }
+        return nil
+    }
+
+    // 从 HTML 中提取纯文本；系统解析器能正确处理实体、表格换行和 Office HTML。
+    private func extractPlainTextFromHTML(_ htmlData: Data) -> String {
+        let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+            .documentType: NSAttributedString.DocumentType.html,
+            .characterEncoding: String.Encoding.utf8.rawValue
+        ]
+
+        if let attributedString = try? NSAttributedString(
+            data: htmlData,
+            options: options,
+            documentAttributes: nil
+        ) {
+            return ClipboardTextSanitizer.clean(attributedString.string)
+        }
+
+        guard let html = String(data: htmlData, encoding: .utf8) else { return "" }
+        let withoutTags = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        return ClipboardTextSanitizer.clean(withoutTags)
     }
     
     // MARK: - Enhanced File Type Support
@@ -1997,7 +2064,7 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    func copyToClipboard(item: ClipboardItem) {
+    func copyToClipboard(item: ClipboardItem, preservingFormatting: Bool = true) {
         logger.info("准备复制项目到剪贴板: \(item.type.displayName)")
         
         // 设置标志位防止重复监控
@@ -2016,7 +2083,11 @@ class ClipboardManager: ObservableObject {
         do {
             switch item.type {
             case .text:
-                try copyTextToClipboard(item, pasteboard: pasteboard)
+                try copyTextToClipboard(
+                    item,
+                    pasteboard: pasteboard,
+                    preservingFormatting: preservingFormatting
+                )
                 
             case .image:
                 try copyImageToClipboard(item, pasteboard: pasteboard)
@@ -2054,13 +2125,28 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    private func copyTextToClipboard(_ item: ClipboardItem, pasteboard: NSPasteboard) throws {
+    private func copyTextToClipboard(
+        _ item: ClipboardItem,
+        pasteboard: NSPasteboard,
+        preservingFormatting: Bool
+    ) throws {
         // 验证文本内容
         guard !item.content.isEmpty else {
             throw ClipboardError.dataCorrupted
         }
         pasteboard.setString(item.content, forType: .string)
-        logger.info("文本已复制到剪贴板")
+
+        if preservingFormatting, let payload = formattedTextPayload(for: item) {
+            if let rtfData = payload.rtf {
+                pasteboard.setData(rtfData, forType: .rtf)
+            }
+            if let htmlData = payload.html {
+                pasteboard.setData(htmlData, forType: .html)
+            }
+            logger.info("文本已按原格式复制到剪贴板")
+        } else {
+            logger.info("文本已按纯文本复制到剪贴板")
+        }
     }
     
     private func copyImageToClipboard(_ item: ClipboardItem, pasteboard: NSPasteboard) throws {
@@ -2444,7 +2530,42 @@ class ClipboardManager: ObservableObject {
     
     private func loadClipboardItems() {
         var loadedItems = store.loadItems()
-        let requiresFingerprintPersistence = loadedItems.contains { $0.fingerprint == nil }
+        var requiresFingerprintPersistence = loadedItems.contains { $0.fingerprint == nil }
+        var didSanitizeHistory = false
+
+        loadedItems = loadedItems.compactMap { item in
+            guard item.type == .text || item.type == .code else { return item }
+
+            let cleanedContent = ClipboardTextSanitizer.clean(item.content)
+            guard !cleanedContent.isEmpty else {
+                didSanitizeHistory = true
+                return nil
+            }
+            guard cleanedContent != item.content else { return item }
+
+            didSanitizeHistory = true
+            requiresFingerprintPersistence = true
+            return ClipboardItem(
+                id: item.id,
+                content: cleanedContent,
+                type: item.type,
+                timestamp: item.timestamp,
+                data: item.data,
+                filePath: item.filePath,
+                isFavorite: item.isFavorite,
+                fingerprint: ClipboardItemFingerprint.make(
+                    content: cleanedContent,
+                    type: item.type,
+                    data: nil
+                ),
+                lastUsedAt: item.lastUsedAt
+            )
+        }
+
+        if didSanitizeHistory {
+            store.persistSanitizedHistory(loadedItems)
+            logger.info("已清理历史文本中的 Office VML/CSS 噪声")
+        }
 
         // 文本指纹不需要磁盘 I/O，可以立即补齐；图片等旧记录交给后台流式迁移。
         for index in loadedItems.indices where loadedItems[index].fingerprint == nil {

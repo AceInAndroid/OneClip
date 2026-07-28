@@ -15,6 +15,8 @@
 - Direct paste restores the previously active application before sending the paste command. Without macOS Accessibility permission, it safely falls back to copy and reports the permission requirement.
 - Favorite, copy, paste, search, and delete actions live in the native macOS context menu so they inherit the system Liquid Glass treatment and accessibility behavior.
 - The context menu orders the default paste action first, copy second, then organizational and destructive actions separated into clear groups.
+- Text copied from Office apps is always displayed as sanitized plain text, preserving spreadsheet tabs and row breaks while removing leaked legacy VML/CSS declarations and other formatting markup.
+- RTF/HTML is retained only as a bounded hidden payload, persisted outside the in-memory history JSON and loaded on demand. Double-click, keyboard paste, and normal copy restore that formatting when available; the context menu offers “Paste as Plain Text” as the explicit override.
 
 ## Clipboard presentation modes
 

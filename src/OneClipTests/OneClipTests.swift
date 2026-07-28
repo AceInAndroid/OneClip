@@ -10,6 +10,21 @@ import Testing
 
 struct OneClipTests {
 
+    @Test func officeVMLRulesAreRemovedFromClipboardText() {
+        let source = """
+        v\\:* {behavior:url(#default#VML);} o\\:* {behavior:url(#default#VML);} x\\:* {behavior:url(#default#VML);} .shape {behavior:url(#default#VML);}
+        系统架构图（图片放大后清晰）
+        """
+
+        #expect(ClipboardTextSanitizer.clean(source) == "系统架构图（图片放大后清晰）")
+    }
+
+    @Test func spreadsheetRowsAndColumnsRemainPlainText() {
+        let source = "名称\t数量\r\nPasteLight\t2"
+
+        #expect(ClipboardTextSanitizer.clean(source) == "名称\t数量\nPasteLight\t2")
+    }
+
     @Test func retentionRemovesExpiredNonFavoriteItems() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let item = ClipboardItem(

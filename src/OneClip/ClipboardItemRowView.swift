@@ -7,6 +7,7 @@ struct ClipboardItemRowView: View {
     let onCopy: () -> Void
     let onSelect: () -> Void
     let onPaste: () -> Void
+    let onPasteAsPlainText: () -> Void
     let onDelete: () -> Void
     let index: Int
     let isSelected: Bool
@@ -56,8 +57,11 @@ struct ClipboardItemRowView: View {
             .background(cardBackground)
             .contentShape(RoundedRectangle(cornerRadius: 18))
             .contextMenu {
-                Button(action: onPaste) {
-                    Label("粘贴到光标位置", systemImage: "arrow.up.doc.on.clipboard")
+                Button(action: item.type == .text ? onPasteAsPlainText : onPaste) {
+                    Label(
+                        item.type == .text ? "以纯文本粘贴" : "粘贴到光标位置",
+                        systemImage: item.type == .text ? "textformat" : "arrow.up.doc.on.clipboard"
+                    )
                 }
 
                 Button(action: onCopy) {

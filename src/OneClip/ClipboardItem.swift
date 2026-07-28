@@ -61,6 +61,40 @@ extension ClipboardItemType {
     }
 }
 
+enum ClipboardTextSanitizer {
+    private static let officeVMLRulePattern = #"(?i)(?:[a-z]\\?:\*|\.[a-z][\w-]*)\s*\{\s*behavior\s*:\s*url\([^)]*#default#VML[^)]*\)\s*;?\s*\}"#
+
+    static func clean(_ source: String) -> String {
+        let normalizedScalars = source.unicodeScalars.filter { scalar in
+            scalar == "\n" || scalar == "\r" || scalar == "\t" || scalar.value >= 0x20
+        }
+
+        var text = String(String.UnicodeScalarView(normalizedScalars))
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        // Excel/Office HTML may leak legacy VML behavior declarations into RTF plain text.
+        // Remove only those declarations and preserve tabs/newlines used by copied table cells.
+        text = text.replacingOccurrences(
+            of: officeVMLRulePattern,
+            with: "",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: #"(?m)^[ \t]+$"#,
+            with: "",
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: #"\n{3,}"#,
+            with: "\n\n",
+            options: .regularExpression
+        )
+
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct ClipboardItem: Identifiable, Codable, Equatable {
     let id: UUID
     let content: String

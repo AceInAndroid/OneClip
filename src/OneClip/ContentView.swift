@@ -393,6 +393,9 @@ struct ContentView: View {
                                 onPaste: {
                                     performSmartPaste(item: item)
                                 },
+                                onPasteAsPlainText: {
+                                    performSmartPaste(item: item, preservingFormatting: false)
+                                },
                                 onDelete: {
                                     clipboardManager.deleteItem(item)
                                     showDeleteFeedback()
@@ -508,6 +511,9 @@ struct ContentView: View {
                                 },
                                 onPaste: {
                                     performSmartPaste(item: item)
+                                },
+                                onPasteAsPlainText: {
+                                    performSmartPaste(item: item, preservingFormatting: false)
                                 },
                                 onDelete: {
                                     clipboardManager.deleteItem(item)
@@ -1062,9 +1068,12 @@ struct ContentView: View {
     }
     
     // 智能粘贴功能 - 直接粘贴到光标位置
-    private func performSmartPaste(item: ClipboardItem) {
+    private func performSmartPaste(item: ClipboardItem, preservingFormatting: Bool = true) {
         // 先将内容复制到系统剪贴板
-        clipboardManager.copyToClipboard(item: item)
+        clipboardManager.copyToClipboard(
+            item: item,
+            preservingFormatting: preservingFormatting
+        )
 
         guard AccessibilityPermissionManager.shared.checkPermissionSync() else {
             Logger.shared.warning("直接粘贴已降级为复制：缺少辅助功能权限")
@@ -1082,7 +1091,7 @@ struct ContentView: View {
         }
 
         // 显示反馈
-        showFeedback(message: "已粘贴到光标位置")
+        showFeedback(message: preservingFormatting && item.type == .text ? "已保留格式粘贴" : "已按纯文本粘贴")
     }
     
     // 使用CGEvent发送Cmd+V键盘事件
@@ -1393,6 +1402,7 @@ struct ClipboardShelfItemView: View {
     let onCopy: () -> Void
     let onSelect: () -> Void
     let onPaste: () -> Void
+    let onPasteAsPlainText: () -> Void
     let onDelete: () -> Void
 
     @State private var isHovered = false
@@ -1596,8 +1606,11 @@ struct ClipboardShelfItemView: View {
 
     @ViewBuilder
     private var contextMenuContent: some View {
-        Button(action: onPaste) {
-            Label("粘贴到光标位置", systemImage: "arrow.up.doc.on.clipboard")
+        Button(action: item.type == .text ? onPasteAsPlainText : onPaste) {
+            Label(
+                item.type == .text ? "以纯文本粘贴" : "粘贴到光标位置",
+                systemImage: item.type == .text ? "textformat" : "arrow.up.doc.on.clipboard"
+            )
         }
 
         Button(action: onCopy) {
