@@ -19,6 +19,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var searchText = ""
     @FocusState private var isSearchFocused: Bool
+    @State private var isSearchModeActive = false
     @State private var showFeedback = false
     @State private var feedbackMessage = ""
     @State private var showSettings = false
@@ -66,16 +67,6 @@ struct ContentView: View {
             ],
             startPoint: .top,
             endPoint: .bottom
-        )
-    }
-    
-    private static func searchBorderGradient(for colorScheme: ColorScheme) -> LinearGradient {
-        LinearGradient(
-            colors: colorScheme == .dark ? 
-                [Color.white.opacity(0.15), Color.clear] : 
-                [Color.white.opacity(0.3), Color.clear],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
         )
     }
     
@@ -181,8 +172,12 @@ struct ContentView: View {
             // 为左上角窗口操作按钮留出空间
             Spacer()
                 .frame(width: 80)
-            
-            searchBar
+
+            if isSearchModeActive {
+                searchBar
+                    .frame(minWidth: 240, maxWidth: 360)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             
             Spacer()
             
@@ -192,31 +187,77 @@ struct ContentView: View {
         .padding(.top, 20)
         .padding(.bottom, 16)
         .background(Color.clear)
+        .animation(.easeOut(duration: 0.18), value: isSearchModeActive)
     }
     
     private var searchBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
-                .font(.system(size: 14, weight: .medium))
-                .opacity(0.7)
+                .foregroundStyle(isSearchFocused ? Color.accentColor : Color.secondary)
+                .font(.system(size: 13, weight: .semibold))
             
             TextField("搜索剪贴板内容...", text: $searchText)
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(.body, design: .default))
+                .textFieldStyle(.plain)
+                .font(.system(size: 13.5, weight: .medium, design: .rounded))
                 .focused($isSearchFocused)
+
+            Button(action: closeSearchMode) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 19, height: 19)
+                    .background(Circle().fill(Color.primary.opacity(0.065)))
+            }
+            .buttonStyle(.plain)
+            .help("退出搜索")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.leading, 13)
+        .padding(.trailing, 9)
+        .frame(height: 38)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.ultraThinMaterial)
+
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.055 : 0.22),
+                                Color.accentColor.opacity(isSearchFocused ? 0.07 : 0.025),
+                                Color.black.opacity(colorScheme == .dark ? 0.07 : 0.015)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .shadow(
+                color: isSearchFocused
+                    ? Color.accentColor.opacity(0.16)
+                    : Color.black.opacity(colorScheme == .dark ? 0.18 : 0.07),
+                radius: isSearchFocused ? 10 : 7,
+                y: 3
+            )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Self.searchBorderGradient(for: colorScheme), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: isSearchFocused
+                            ? [Color.accentColor.opacity(0.72), Color.white.opacity(0.28)]
+                            : [Color.white.opacity(colorScheme == .dark ? 0.18 : 0.48), Color.primary.opacity(0.07)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: isSearchFocused ? 1.15 : 0.8
+                )
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture {
+            activateSearchMode()
+        }
+        .animation(.easeOut(duration: 0.16), value: isSearchFocused)
     }
     
     private var controlButtons: some View {
@@ -407,8 +448,11 @@ struct ContentView: View {
                     .font(.system(.body, design: .rounded, weight: .bold))
             }
 
-            searchBar
-                .frame(width: 250)
+            if isSearchModeActive {
+                searchBar
+                    .frame(width: 270)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
@@ -429,6 +473,7 @@ struct ContentView: View {
         .padding(.horizontal, 18)
         .padding(.top, 14)
         .padding(.bottom, 10)
+        .animation(.easeOut(duration: 0.18), value: isSearchModeActive)
     }
 
     private var bottomShelfItems: some View {
@@ -540,6 +585,18 @@ struct ContentView: View {
         }
     }
 
+    private var keyboardShortcutMonitor: some View {
+        CommandShortcutKeyMonitor(
+            numberAction: handleMonitoredNumberKey,
+            searchAction: handleSearchShortcut,
+            textSearchAction: handleTypingSearchShortcut,
+            finishSearchAction: handleFinishSearchShortcut,
+            confirmAction: handleConfirmShortcut,
+            navigationAction: handleMonitoredNavigation
+        )
+        .frame(width: 0, height: 0)
+    }
+
     var body: some View {
         activeLayout
         .overlay(
@@ -604,14 +661,11 @@ struct ContentView: View {
             // 根据WindowManager的状态控制窗口状态
             DispatchQueue.main.async {
                 if newValue {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        // 窗口显示并成为 key window 后，默认将输入焦点交给搜索框。
-                        self.isSearchFocused = true
-                        self.selectedIndex = nil
-                    }
+                    // 每次打开都从浏览状态开始，搜索框默认不展示也不抢占焦点。
+                    self.resetSearchMode()
+                    self.selectedIndex = nil
                 } else {
-                    self.isSearchFocused = false
-                    // 窗口隐藏时重置选中状态
+                    self.resetSearchMode()
                     self.selectedIndex = nil
                 }
             }
@@ -671,10 +725,7 @@ struct ContentView: View {
             showSettings = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ActivateSearchField"))) { _ in
-            // 激活搜索框
-            DispatchQueue.main.async {
-                isSearchFocused = true
-            }
+            activateSearchMode()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClipboardItemsChanged"))) { _ in
             // 当剪贴板项目发生变化时，避免过度刷新图片预览
@@ -703,45 +754,11 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 selectedCategory = .favorites
                 // 重置搜索文本和选中状态
-                searchText = ""
+                closeSearchMode()
                 selectedIndex = nil
             }
         }
-        .background(
-            CommandShortcutKeyMonitor(
-                numberAction: { number in
-                    guard !showSettings, !showShortcutsHelp else { return false }
-
-                    switch handleNumberKey(number) {
-                    case .handled:
-                        return true
-                    case .ignored:
-                        return false
-                    @unknown default:
-                        return false
-                    }
-                },
-                searchAction: {
-                    guard !showSettings, !showShortcutsHelp else { return false }
-
-                    DispatchQueue.main.async {
-                        isSearchFocused = true
-                    }
-                    return true
-                },
-                navigationAction: { direction in
-                    guard !showSettings,
-                          !showShortcutsHelp,
-                          !showClearAllConfirmation,
-                          !showDeleteConfirmation else {
-                        return false
-                    }
-
-                    return handleArrowNavigation(direction)
-                }
-            )
-            .frame(width: 0, height: 0)
-        )
+        .background(keyboardShortcutMonitor)
         .focusable(true)
         .onKeyPress(.escape) {
             // ESC 键隐藏窗口并隐藏Dock图标
@@ -809,28 +826,7 @@ struct ContentView: View {
         }
         // 应用内其他快捷键
         .onKeyPress(.return) {
-            // 立即激活用户活动状态，确保快捷键响应及时
-            clipboardManager.updateUserActivity()
-            
-            // Enter 键复制选中项目
-            let targetItem: ClipboardItem?
-            if let index = selectedIndex, index < filteredItems.count {
-                targetItem = filteredItems[index]
-            } else if let firstItem = filteredItems.first {
-                targetItem = firstItem
-            } else {
-                targetItem = nil
-            }
-            
-            if let item = targetItem {
-                clipboardManager.copyToClipboard(item: item)
-                showCopyFeedback()
-                // 复制后隐藏窗口
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.hideWindow()
-                }
-            }
-            return .handled
+            handleReturnKeyPress()
         }
         .onKeyPress(.delete, phases: .down) { keyPress in
             // 检查是否按下了 Cmd+Delete 组合键
@@ -872,6 +868,122 @@ struct ContentView: View {
     }
 
     // MARK: - 应用内快捷键处理
+
+    private var isKeyboardInteractionBlocked: Bool {
+        showSettings
+            || showShortcutsHelp
+            || showClearAllConfirmation
+            || showDeleteConfirmation
+    }
+
+    private func handleMonitoredNumberKey(_ number: Int) -> Bool {
+        guard !showSettings, !showShortcutsHelp else { return false }
+
+        switch handleNumberKey(number) {
+        case .handled:
+            return true
+        case .ignored:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func handleSearchShortcut() -> Bool {
+        guard !showSettings, !showShortcutsHelp else { return false }
+
+        activateSearchMode()
+        return true
+    }
+
+    private func handleTypingSearchShortcut() -> Bool {
+        guard !isKeyboardInteractionBlocked else { return false }
+
+        activateSearchMode()
+        return true
+    }
+
+    private func handleFinishSearchShortcut() -> Bool {
+        guard !isKeyboardInteractionBlocked, isSearchModeActive else { return false }
+
+        finishSearchEditing()
+        return true
+    }
+
+    private func handleConfirmShortcut() -> Bool {
+        guard !isKeyboardInteractionBlocked else { return false }
+        return handleReturnKey()
+    }
+
+    private func handleMonitoredNavigation(_ direction: ClipboardNavigationDirection) -> Bool {
+        guard !isKeyboardInteractionBlocked else { return false }
+        return handleArrowNavigation(direction)
+    }
+
+    private func activateSearchMode() {
+        if !isSearchModeActive {
+            performAnimation(.easeOut(duration: 0.18)) {
+                isSearchModeActive = true
+            }
+        }
+
+        selectedIndex = nil
+        DispatchQueue.main.async {
+            isSearchFocused = true
+        }
+    }
+
+    private func finishSearchEditing() {
+        isSearchFocused = false
+        selectedIndex = nil
+    }
+
+    private func closeSearchMode() {
+        isSearchFocused = false
+        searchText = ""
+        selectedIndex = nil
+        performAnimation(.easeOut(duration: 0.16)) {
+            isSearchModeActive = false
+        }
+    }
+
+    private func resetSearchMode() {
+        isSearchFocused = false
+        isSearchModeActive = false
+        searchText = ""
+    }
+
+    private func handleReturnKey() -> Bool {
+        guard windowManager.isWindowVisible else { return false }
+
+        clipboardManager.updateUserActivity()
+
+        let targetItem: ClipboardItem?
+        if let index = selectedIndex, filteredItems.indices.contains(index) {
+            targetItem = filteredItems[index]
+        } else {
+            targetItem = filteredItems.first
+        }
+
+        if let item = targetItem {
+            clipboardManager.copyToClipboard(item: item)
+            showCopyFeedback()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.hideWindow()
+            }
+        }
+
+        return true
+    }
+
+    private func handleReturnKeyPress() -> KeyPress.Result {
+        if isSearchModeActive, isSearchFocused {
+            finishSearchEditing()
+            return .handled
+        }
+
+        return handleReturnKey() ? .handled : .ignored
+    }
 
     private func handleArrowNavigation(_ direction: ClipboardNavigationDirection) -> Bool {
         guard windowManager.isWindowVisible, !filteredItems.isEmpty else {
@@ -3962,12 +4074,18 @@ struct VisualEffectView: NSViewRepresentable {
 struct CommandShortcutKeyMonitor: NSViewRepresentable {
     let numberAction: (Int) -> Bool
     let searchAction: () -> Bool
+    let textSearchAction: () -> Bool
+    let finishSearchAction: () -> Bool
+    let confirmAction: () -> Bool
     let navigationAction: (ClipboardNavigationDirection) -> Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             numberAction: numberAction,
             searchAction: searchAction,
+            textSearchAction: textSearchAction,
+            finishSearchAction: finishSearchAction,
+            confirmAction: confirmAction,
             navigationAction: navigationAction
         )
     }
@@ -3980,6 +4098,9 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.numberAction = numberAction
         context.coordinator.searchAction = searchAction
+        context.coordinator.textSearchAction = textSearchAction
+        context.coordinator.finishSearchAction = finishSearchAction
+        context.coordinator.confirmAction = confirmAction
         context.coordinator.navigationAction = navigationAction
     }
 
@@ -3990,16 +4111,26 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
     final class Coordinator {
         var numberAction: (Int) -> Bool
         var searchAction: () -> Bool
+        var textSearchAction: () -> Bool
+        var finishSearchAction: () -> Bool
+        var confirmAction: () -> Bool
         var navigationAction: (ClipboardNavigationDirection) -> Bool
         private var monitor: Any?
+        private var isReplayingTextEvent = false
 
         init(
             numberAction: @escaping (Int) -> Bool,
             searchAction: @escaping () -> Bool,
+            textSearchAction: @escaping () -> Bool,
+            finishSearchAction: @escaping () -> Bool,
+            confirmAction: @escaping () -> Bool,
             navigationAction: @escaping (ClipboardNavigationDirection) -> Bool
         ) {
             self.numberAction = numberAction
             self.searchAction = searchAction
+            self.textSearchAction = textSearchAction
+            self.finishSearchAction = finishSearchAction
+            self.confirmAction = confirmAction
             self.navigationAction = navigationAction
         }
 
@@ -4009,6 +4140,11 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self else { return event }
 
+                if self.isReplayingTextEvent {
+                    self.isReplayingTextEvent = false
+                    return event
+                }
+
                 let userModifiers = event.modifierFlags.intersection([
                     .command,
                     .control,
@@ -4016,7 +4152,23 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
                     .shift
                 ])
 
-                if userModifiers.isEmpty {
+                if userModifiers.isEmpty,
+                   event.keyCode == 36 || event.keyCode == 76 {
+                    if self.hasTextInputFocus() {
+                        // 输入法有未确认的拼音时，第一次回车必须交给输入法。
+                        if self.hasMarkedText() {
+                            return event
+                        }
+
+                        if self.finishSearchAction() {
+                            return nil
+                        }
+                    } else if self.confirmAction() {
+                        return nil
+                    }
+                }
+
+                if userModifiers.isEmpty, !self.hasTextInputFocus() {
                     let direction: ClipboardNavigationDirection?
                     switch event.keyCode {
                     case 123, 126: // Left / Up
@@ -4030,6 +4182,13 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
                     if let direction, self.navigationAction(direction) {
                         return nil
                     }
+                }
+
+                if !self.hasTextInputFocus(),
+                   self.isTextSearchTrigger(event, modifiers: userModifiers),
+                   self.textSearchAction() {
+                    self.replayAfterSearchFocus(event)
+                    return nil
                 }
 
                 guard !event.isARepeat,
@@ -4050,6 +4209,48 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
                 }
 
                 return event
+            }
+        }
+
+        private func isTextSearchTrigger(
+            _ event: NSEvent,
+            modifiers: NSEvent.ModifierFlags
+        ) -> Bool {
+            guard !event.isARepeat,
+                  modifiers.isEmpty || modifiers == [.shift],
+                  let characters = event.characters,
+                  characters.count == 1 else {
+                return false
+            }
+
+            return characters.unicodeScalars.allSatisfy {
+                CharacterSet.letters.contains($0)
+            }
+        }
+
+        private func hasMarkedText() -> Bool {
+            guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
+                return false
+            }
+
+            return textView.hasMarkedText()
+        }
+
+        private func hasTextInputFocus() -> Bool {
+            NSApp.keyWindow?.firstResponder is NSTextView
+        }
+
+        private func replayAfterSearchFocus(_ event: NSEvent) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+
+                self.isReplayingTextEvent = true
+                NSApp.postEvent(event, atStart: true)
+
+                // 如果窗口在重放前关闭，确保监视器不会长期停留在重放状态。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.isReplayingTextEvent = false
+                }
             }
         }
 

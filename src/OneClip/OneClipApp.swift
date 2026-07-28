@@ -1347,12 +1347,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     }
                 }
                 
-                // 确保搜索框获得焦点
+                // 窗口打开后保持默认浏览状态，搜索由字母键或 Command-F 显式激活。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    // 发送通知激活搜索框
-                    NotificationCenter.default.post(name: NSNotification.Name("ActivateSearchField"), object: nil)
-                    // 现有窗口已显示，Dock图标可见，搜索框已激活
-                    
                     // 更新菜单状态
                     self.updateStatusBarMenu()
                 }
