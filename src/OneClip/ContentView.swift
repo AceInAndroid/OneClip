@@ -1073,11 +1073,11 @@ struct ContentView: View {
             return
         }
 
-        clipboardManager.markItemAsUsed(item)
-        selectedIndex = 0
-
         // 恢复唤出 OneClip 前的应用，再把内容粘贴到原插入点。
         windowManager.hideWindowAndRestorePreviousApplication {
+            // 窗口隐藏后再更新排序，避免双击时可见列表立即跳动。
+            self.clipboardManager.markItemAsUsed(item)
+            self.selectedIndex = 0
             self.sendCmdVKeyEvent()
         }
 
