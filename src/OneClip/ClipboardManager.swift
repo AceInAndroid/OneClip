@@ -292,13 +292,13 @@ class ClipboardManager: ObservableObject {
         let alert = NSAlert()
         alert.messageText = "需要剪贴板访问权限"
         alert.informativeText = """
-        OneClip 需要访问剪贴板以监控复制的内容。
+        PasteLight 需要访问剪贴板以监控复制的内容。
         
         请按照以下步骤授予权限：
         1. 打开系统偏好设置 > 安全性与隐私 > 隐私
         2. 在左侧列表中找到"辅助功能"或"自动化"
-        3. 确保 OneClip 已添加并勾选
-        4. 重启 OneClip 应用
+        3. 确保 PasteLight 已添加并勾选
+        4. 重启 PasteLight 应用
         
         如果问题仍然存在，请尝试重新授权或联系技术支持。
         """

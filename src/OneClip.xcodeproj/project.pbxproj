@@ -31,7 +31,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		AA0000FD29A8B4B700123456 /* OneClip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OneClip.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000FD29A8B4B700123456 /* PasteLight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PasteLight.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00000029A8B4B700123456 /* OneClipApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneClipApp.swift; sourceTree = "<group>"; };
 		AA00000229A8B4B700123456 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		AA00000429A8B4B800123456 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -78,7 +78,7 @@
 		AA0000FE29A8B4B700123456 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AA0000FD29A8B4B700123456 /* OneClip.app */,
+				AA0000FD29A8B4B700123456 /* PasteLight.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -136,8 +136,8 @@
 			dependencies = (
 			);
 			name = OneClip;
-			productName = OneClip;
-			productReference = AA0000FD29A8B4B700123456 /* OneClip.app */;
+			productName = PasteLight;
+			productReference = AA0000FD29A8B4B700123456 /* PasteLight.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -346,6 +346,8 @@
 				DEVELOPMENT_ASSET_PATHS = "\"OneClip/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = PasteLight;
+				INFOPLIST_KEY_CFBundleName = PasteLight;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -353,7 +355,8 @@
 				);
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.app;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = OneClip;
+				PRODUCT_NAME = PasteLight;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -371,6 +374,8 @@
 				DEVELOPMENT_ASSET_PATHS = "\"OneClip/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = PasteLight;
+				INFOPLIST_KEY_CFBundleName = PasteLight;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -378,7 +383,8 @@
 				);
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.app;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = OneClip;
+				PRODUCT_NAME = PasteLight;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};

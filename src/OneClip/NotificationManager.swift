@@ -25,7 +25,7 @@ class NotificationManager: ObservableObject {
                     print("通知权限已授予")
                 } else {
                     print("通知权限被用户拒绝")
-                    print("提示：请在系统偏好设置 > 通知 > OneClip 中启用通知")
+                    print("提示：请在系统偏好设置 > 通知 > PasteLight 中启用通知")
                 }
             }
         }

@@ -444,7 +444,7 @@ struct ContentView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
 
-                Text("OneClip")
+                Text("PasteLight")
                     .font(.system(.body, design: .rounded, weight: .bold))
             }
 
@@ -1073,7 +1073,7 @@ struct ContentView: View {
             return
         }
 
-        // 恢复唤出 OneClip 前的应用，再把内容粘贴到原插入点。
+        // 恢复唤出 PasteLight 前的应用，再把内容粘贴到原插入点。
         windowManager.hideWindowAndRestorePreviousApplication {
             // 窗口隐藏后再更新排序，避免双击时可见列表立即跳动。
             self.clipboardManager.markItemAsUsed(item)
@@ -3071,7 +3071,7 @@ struct SettingsView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("OneClip")
+                        Text("PasteLight")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.primary)
                         Text("设置")
@@ -3319,7 +3319,7 @@ struct SettingsView: View {
         case 3: return "存储管理"
         case 4: return "快捷键配置"
         case 5: return "高级选项"
-        case 6: return "关于 OneClip"
+        case 6: return "关于 PasteLight"
         default: return "设置"
         }
     }
@@ -3348,7 +3348,7 @@ struct SettingsView: View {
                 VStack(spacing: 16) {
                     ModernToggleRow(
                         title: "开机自动启动",
-                        subtitle: "系统启动时自动运行 OneClip",
+                        subtitle: "系统启动时自动运行 PasteLight",
                         icon: "power",
                         binding: $settingsManager.autoStartOnLogin
                     )
@@ -3917,15 +3917,15 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
                         )
                 }
                 
-                Text("OneClip")
+                Text("PasteLight")
                     .font(.system(.largeTitle, design: .rounded, weight: .bold))
                     .foregroundColor(.primary)
                 
-                Text("智能剪贴板管理器")
+                Text("轻量剪贴板")
                     .font(.system(.title3, design: .default, weight: .medium))
                     .foregroundColor(.secondary)
                 
-                Text("版本 1.1.0")
+                Text("版本 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1")")
                     .font(.system(.body, design: .monospaced))
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 16)
@@ -3963,7 +3963,7 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
                 Text("联系我：wcowin@qq.com")
                     .font(.system(.body, design: .default, weight: .medium))
                     .foregroundColor(.primary)                
-                Text("© 2025 OneClip. All rights reserved.")
+                Text("© 2026 PasteLight. All rights reserved.")
                     .font(.system(.caption, design: .default))
                     .foregroundColor(.secondary)
             }
@@ -5014,11 +5014,11 @@ struct WelcomeStateView: View {
                     .symbolEffect(.pulse, options: .repeating)
                 
                 VStack(spacing: 8) {
-                    Text("欢迎使用 OneClip！")
+                    Text("欢迎使用 PasteLight！")
                         .font(.system(.title2, design: .rounded, weight: .bold))
                         .foregroundStyle(.primary)
                     
-                    Text("智能剪贴板管理器")
+                    Text("轻量剪贴板")
                         .font(.system(.callout, design: .default, weight: .medium))
                         .foregroundStyle(.secondary)
                 }

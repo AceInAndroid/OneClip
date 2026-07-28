@@ -235,7 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 按顺序尝试图标
         for iconName in iconNames {
-            if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "OneClip") {
+            if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "PasteLight") {
                 iconImage = image
                 logDebug("使用系统状态栏图标: \(iconName)")
                 break
@@ -268,7 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 确保按钮其他属性设置正确
         button.title = button.image != nil ? "" : button.title
-        button.toolTip = "OneClip - 剪贴板管理器"
+        button.toolTip = "PasteLight - 轻量剪贴板"
         button.isBordered = false
         button.appearsDisabled = false
     }
@@ -301,7 +301,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         var mainWindowFound = false
         for window in allWindows {
-            if window.title == "OneClip" || window.className.contains("SwiftUI") {
+            if window.title == "PasteLight" || window.className.contains("SwiftUI") {
                 if !mainWindowFound {
                     // 第一个找到的主窗口，设为主窗口并显示
                     mainWindow = window
@@ -682,7 +682,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 确保使用现有的主窗口
         if mainWindow == nil {
             // 如果主窗口未设置，从应用中获取第一个窗口
-            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "OneClip" || $0.className.contains("SwiftUI") }) {
+            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "PasteLight" || $0.className.contains("SwiftUI") }) {
                 mainWindow = firstWindow
             }
         }
@@ -754,7 +754,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         menu.addItem(permissionTestItem)
         #endif
         
-        let aboutItem = NSMenuItem(title: "关于 OneClip", action: #selector(showAbout), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "关于 PasteLight", action: #selector(showAbout), keyEquivalent: "")
         if let aboutIcon = NSImage(systemSymbolName: "info.circle.fill", accessibilityDescription: "About") {
             aboutIcon.size = NSSize(width: 16, height: 16)
             aboutItem.image = aboutIcon
@@ -765,7 +765,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         menu.addItem(NSMenuItem.separator())
         
         // === 退出区域 ===
-        let quitItem = NSMenuItem(title: "退出 OneClip", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 PasteLight", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.keyEquivalentModifierMask = [.command]
         if let quitIcon = NSImage(systemSymbolName: "power.circle.fill", accessibilityDescription: "Quit") {
             quitIcon.size = NSSize(width: 16, height: 16)
@@ -1302,7 +1302,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 确保使用现有的主窗口
         if mainWindow == nil {
             // 如果主窗口未设置，从应用中获取第一个窗口
-            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "OneClip" || $0.className.contains("SwiftUI") }) {
+            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "PasteLight" || $0.className.contains("SwiftUI") }) {
                 mainWindow = firstWindow
                 // 找到现有窗口，设置为主窗口
             } else {
@@ -1626,7 +1626,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         containerView.layer?.addSublayer(highlightLayer)
         
         // 应用标题 - 居中显示在顶部
-        let titleLabel = NSTextField(labelWithString: "OneClip")
+        let titleLabel = NSTextField(labelWithString: "PasteLight")
         titleLabel.frame = NSRect(x: 20, y: 620, width: windowSize.width - 40, height: 42)
         titleLabel.font = NSFont.systemFont(ofSize: 36, weight: .bold)
         titleLabel.alignment = .center
@@ -1666,7 +1666,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         containerView.addSubview(iconContainer)
         
         // 副标题 - 简洁设计
-        let subtitleLabel = NSTextField(labelWithString: "macOS 智能剪贴板管理器")
+        let subtitleLabel = NSTextField(labelWithString: "macOS 轻量剪贴板")
         subtitleLabel.frame = NSRect(x: 20, y: 465, width: windowSize.width - 40, height: 28)
         subtitleLabel.font = NSFont.systemFont(ofSize: 18, weight: .medium)
         subtitleLabel.alignment = .center
@@ -1708,7 +1708,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         versionInfoContainer.addSubview(versionLabel)
         
         // 版本号
-        let versionNumber = NSTextField(labelWithString: "1.1.0")
+        let versionNumber = NSTextField(
+            labelWithString: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+        )
         versionNumber.frame = NSRect(x: 0, y: 4, width: 140, height: 22)
         versionNumber.font = NSFont.systemFont(ofSize: 18, weight: .bold)
         versionNumber.textColor = NSColor.systemBlue
@@ -1835,7 +1837,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // GitHub信息 - 更好的视觉效果
         let githubInfo = NSButton(frame: NSRect(x: 35, y: 2, width: 280, height: 28))
-        githubInfo.title = "github.com/wcowin/OneClip"
+        githubInfo.title = "github.com/AceInAndroid/OneClip"
         githubInfo.font = NSFont.systemFont(ofSize: 15, weight: .medium)
         githubInfo.isBordered = false
         githubInfo.target = self
@@ -1848,7 +1850,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             .font: NSFont.systemFont(ofSize: 15, weight: .medium),
             .foregroundColor: NSColor.systemGreen
         ]
-        githubInfo.attributedTitle = NSAttributedString(string: "github.com/wcowin/OneClip", attributes: githubAttributes)
+        githubInfo.attributedTitle = NSAttributedString(string: "github.com/AceInAndroid/OneClip", attributes: githubAttributes)
         githubContainer.addSubview(githubInfo)
         contactCard.addSubview(githubContainer)
         
@@ -2114,7 +2116,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     @objc private func openGitHub() {
-        if let url = URL(string: "https://github.com/wcowin/OneClip") {
+        if let url = URL(string: "https://github.com/AceInAndroid/OneClip") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -2249,7 +2251,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 确保使用现有的主窗口
         if mainWindow == nil {
-            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "OneClip" || $0.className.contains("SwiftUI") }) {
+            if let firstWindow = NSApplication.shared.windows.first(where: { $0.title == "PasteLight" || $0.className.contains("SwiftUI") }) {
                 mainWindow = firstWindow
                 // 找到现有窗口，设置为主窗口
             }
@@ -2535,7 +2537,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 backing: .buffered,
                 defer: false
             )
-            window.title = "OneClip 辅助功能授权"
+            window.title = "PasteLight 辅助功能授权"
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.backgroundColor = .clear
@@ -2996,11 +2998,11 @@ private struct AccessibilityPermissionGuideView: View {
 
     private var permissionGuideContent: some View {
         VStack(spacing: 0) {
-            Text(isFirstLaunch ? "让 OneClip 帮你直接粘贴" : "开启直接粘贴")
+            Text(isFirstLaunch ? "让 PasteLight 帮你直接粘贴" : "开启直接粘贴")
                 .font(.system(size: 25, weight: .bold, design: .rounded))
                 .padding(.top, 14)
 
-            Text("把 OneClip 加入“辅助功能”，点击历史记录即可粘贴到当前光标位置。")
+            Text("把 PasteLight 加入“辅助功能”，双击历史记录即可粘贴到当前光标位置。")
                 .font(.system(size: 13.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -3011,7 +3013,7 @@ private struct AccessibilityPermissionGuideView: View {
             PermissionDragAnimation()
                 .padding(.top, 14)
 
-            Text("在系统设置中拖入 OneClip，或点击列表下方的 + 添加，然后打开开关。")
+            Text("在系统设置中拖入 PasteLight，或点击列表下方的 + 添加，然后打开开关。")
                 .font(.system(size: 12.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -3062,11 +3064,11 @@ private struct AccessibilityPermissionGuideView: View {
             Text("授权完成")
                 .font(.system(size: 27, weight: .bold, design: .rounded))
 
-            Text("现在点击任意历史记录，就能直接粘贴到光标位置。")
+            Text("现在双击任意历史记录，就能直接粘贴到光标位置。")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
 
-            Label("OneClip 已准备好", systemImage: "sparkles")
+            Label("PasteLight 已准备好", systemImage: "sparkles")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color.accentColor)
                 .padding(.horizontal, 14)
@@ -3091,7 +3093,7 @@ private struct PermissionDragAnimation: View {
 
             ZStack {
                 PermissionAnimationTile(
-                    title: "OneClip",
+                    title: "PasteLight",
                     symbol: "app.dashed",
                     isHighlighted: false
                 )
@@ -3136,7 +3138,7 @@ private struct PermissionDragAnimation: View {
         }
         .frame(height: 134)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("将 OneClip 图标拖入系统设置的辅助功能列表")
+        .accessibilityLabel("将 PasteLight 图标拖入系统设置的辅助功能列表")
         .onAppear {
             guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
@@ -3206,7 +3208,7 @@ struct OneClipApp: App {
     @StateObject private var clipboardStore = ClipboardStore(getCleanupDays: { 7 })
     
     var body: some Scene {
-        Window("OneClip", id: "main") {
+        Window("PasteLight", id: "main") {
             ContentView()
                 .environmentObject(SettingsManager.shared)
                 .environmentObject(ClipboardManager.shared)
@@ -3240,7 +3242,7 @@ struct OneClipApp: App {
             }
         }
 
-        Window("OneClip 设置", id: "settings") {
+        Window("PasteLight 设置", id: "settings") {
             SettingsView()
                 .environmentObject(SettingsManager.shared)
                 .environmentObject(ClipboardManager.shared)

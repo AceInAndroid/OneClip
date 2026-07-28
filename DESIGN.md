@@ -1,4 +1,4 @@
-# OneClip Design Notes
+# PasteLight Design Notes
 
 ## History retention
 
@@ -18,7 +18,7 @@
 
 ## Clipboard presentation modes
 
-- OneClip supports a bottom shelf and a classic window. The bottom shelf is the default for both new installs and settings migrated from versions without a presentation-mode value.
+- PasteLight supports a bottom shelf and a classic window. The bottom shelf is the default for both new installs and settings migrated from versions without a presentation-mode value.
 - The bottom shelf is anchored 12–14 points above the visible screen edge on the display containing the pointer. It spans the available width and enters with a short upward Liquid Glass transition.
 - The shelf uses a compact search/category toolbar and a single horizontally scrolling row of fixed-size cards. Cards expose type, preview, content size, and the `⌘1–9` quick-copy mapping without showing a relative-time counter.
 - Shelf cards and classic rows share the same interaction contract: single click selects, double click pastes, and the context menu owns explicit copy, favorite, search, paste, and delete actions.
@@ -28,7 +28,7 @@
 ## Accessibility onboarding
 
 - Authorization uses one compact Liquid Glass guide instead of a text-heavy blocking alert.
-- The guide demonstrates moving the OneClip icon into macOS Accessibility settings and also mentions the system `+` control.
+- The guide demonstrates moving the PasteLight icon into macOS Accessibility settings and also mentions the system `+` control.
 - “Open System Settings” is the only emphasized action; defer and disable-reminder actions remain visually secondary.
 - Permission state is detected automatically and transitions inline to a brief success state without opening another alert.
 - Motion is subtle, runs only while permission is missing, and respects Reduce Motion.

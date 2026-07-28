@@ -1,15 +1,15 @@
 # 贡献指南
 
-感谢你对 OneClip 的关注！欢迎提交 Issue 和 Pull Request。
+感谢你对 PasteLight 的关注！欢迎提交 Issue 和 Pull Request。
 
 ## 如何贡献
 
 ### 报告 Bug
 
-1. 在 [Issues](https://github.com/Wcowin/OneClip/issues) 中搜索是否已有相同问题
+1. 在 [Issues](https://github.com/AceInAndroid/OneClip/issues) 中搜索是否已有相同问题
 2. 如果没有，创建新 Issue，包含：
    - macOS 版本
-   - OneClip 版本
+   - PasteLight 版本
    - 问题描述和复现步骤
    - 错误日志（如有）
 
@@ -30,7 +30,7 @@
 
 ### 开发环境
 
-- macOS 12.0+
+- macOS 14.0+
 - Xcode 15.0+
 - Swift 5.9+
 
