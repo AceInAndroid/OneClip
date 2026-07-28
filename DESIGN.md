@@ -34,6 +34,8 @@
 - `AccessibilityPermissionManager` is the single source for authorization state and temporary polling while the guide is active; feature owners must not create independent permission timers.
 - “Do not remind again” suppresses automatic guides only. Manual entries always work, and resetting all settings clears this preference.
 - The guide demonstrates moving the PasteLight icon into macOS Accessibility settings and also mentions the system `+` control.
+- The displayed app icon is a real file drag source. Starting a drag opens the Accessibility pane after the drag session begins, allowing the user to drop PasteLight directly into the list; the normal button remains as a keyboard-accessible fallback.
+- The guide never claims to grant permission automatically: macOS still requires the user to enable the switch after adding the app.
 - “Open System Settings” is the only emphasized action; defer and disable-reminder actions remain visually secondary.
 - Permission state is detected automatically and transitions inline to a brief success state without opening another alert.
 - Motion is subtle, runs only while permission is missing, and respects Reduce Motion.

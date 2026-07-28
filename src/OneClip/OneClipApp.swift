@@ -2472,10 +2472,10 @@ private struct AccessibilityPermissionGuideView: View {
                 .frame(maxWidth: 420)
                 .padding(.top, 8)
 
-            PermissionDragAnimation()
+            PermissionDragAnimation(onDragStarted: onOpenSettings)
                 .padding(.top, 14)
 
-            Text("在系统设置中拖入 PasteLight，或点击列表下方的 + 添加，然后打开开关。")
+            Text("按住 PasteLight 图标开始拖动，辅助功能页面会自动打开；松手加入列表后打开开关。")
                 .font(.system(size: 12.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -2546,12 +2546,14 @@ private struct AccessibilityPermissionGuideView: View {
 private struct PermissionDragAnimation: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isAtDestination = false
+    @State private var hasOpenedSettingsForCurrentDrag = false
+    let onDragStarted: () -> Void
 
     var body: some View {
         GeometryReader { geometry in
             let sourceX: CGFloat = 72
             let destinationX = geometry.size.width - 72
-            let itemX = reduceMotion ? destinationX : (isAtDestination ? destinationX : sourceX)
+            let hintX = reduceMotion ? geometry.size.width / 2 : (isAtDestination ? destinationX - 34 : sourceX + 34)
 
             ZStack {
                 PermissionAnimationTile(
@@ -2582,31 +2584,57 @@ private struct PermissionDragAnimation: View {
                     .foregroundStyle(Color.accentColor.opacity(0.7))
                     .position(x: geometry.size.width / 2, y: 57)
 
-                Image(nsImage: NSApplication.shared.applicationIconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 57, height: 57)
-                    .shadow(color: .black.opacity(0.22), radius: 8, y: 5)
-                    .position(x: itemX, y: 57)
+                draggableAppIcon
+                    .position(x: sourceX, y: 57)
 
                 if !reduceMotion {
                     Image(systemName: "hand.draw.fill")
                         .font(.system(size: 21, weight: .medium))
                         .foregroundStyle(.white, Color.accentColor)
                         .shadow(color: .black.opacity(0.2), radius: 3, y: 2)
-                        .position(x: itemX + 29, y: 81)
+                        .position(x: hintX, y: 81)
+                        .allowsHitTesting(false)
                 }
             }
         }
         .frame(height: 134)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("将 PasteLight 图标拖入系统设置的辅助功能列表")
         .onAppear {
             guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
                 isAtDestination = true
             }
         }
+    }
+
+    private var draggableAppIcon: some View {
+        Image(nsImage: NSApplication.shared.applicationIconImage)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 57, height: 57)
+            .shadow(color: .black.opacity(0.22), radius: 8, y: 5)
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .onDrag {
+                let appURL = Bundle.main.bundleURL
+                let provider = NSItemProvider(contentsOf: appURL)
+                    ?? NSItemProvider(object: appURL as NSURL)
+                provider.suggestedName = appURL.lastPathComponent
+
+                if !hasOpenedSettingsForCurrentDrag {
+                    hasOpenedSettingsForCurrentDrag = true
+                    // 让系统先建立跨应用拖拽会话，再把正确的隐私页面带到前台。
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        onDragStarted()
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        hasOpenedSettingsForCurrentDrag = false
+                    }
+                }
+
+                return provider
+            }
+            .help("拖到辅助功能列表")
+            .accessibilityLabel("可拖动的 PasteLight 应用图标")
+            .accessibilityHint("开始拖动后会自动打开系统设置的辅助功能页面")
     }
 }
 
