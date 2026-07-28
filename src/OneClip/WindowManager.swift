@@ -148,9 +148,14 @@ class WindowManager: ObservableObject {
         let targetFrame: NSRect
         switch mode {
         case .bottomShelf:
-            window.styleMask = [.borderless, .fullSizeContentView]
+            // A plain borderless NSWindow cannot become key, so TextField and Command+F
+            // never receive keyboard focus. Keep a transparent title bar underneath the
+            // shelf appearance to preserve the same visuals while allowing text input.
+            window.styleMask = [.titled, .fullSizeContentView]
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            setStandardWindowButtonsHidden(true, for: window)
             window.isMovable = false
             window.isMovableByWindowBackground = false
             window.backgroundColor = .clear
@@ -172,6 +177,8 @@ class WindowManager: ObservableObject {
             window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            setStandardWindowButtonsHidden(false, for: window)
             window.isMovable = true
             window.isMovableByWindowBackground = true
             window.backgroundColor = .clear
@@ -208,7 +215,34 @@ class WindowManager: ObservableObject {
         }
 
         applyWindowOnTopState()
+        scheduleWindowChromeRefresh(for: window)
         logger.info("窗口展示方式已切换为: \(mode.title)")
+    }
+
+    private func scheduleWindowChromeRefresh(for window: NSWindow) {
+        let applyCurrentMode = { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.setStandardWindowButtonsHidden(
+                SettingsManager.shared.clipboardPresentationMode == .bottomShelf,
+                for: window
+            )
+        }
+
+        applyCurrentMode()
+        DispatchQueue.main.async(execute: applyCurrentMode)
+    }
+
+    private func setStandardWindowButtonsHidden(_ hidden: Bool, for window: NSWindow) {
+        // SwiftUI may recreate the individual traffic-light buttons after the style mask
+        // changes. Hiding their shared title-bar container keeps the shelf chrome-free.
+        window.standardWindowButton(.closeButton)?.superview?.isHidden = hidden
+
+        [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].forEach { buttonType in
+            guard let button = window.standardWindowButton(buttonType) else { return }
+            button.isHidden = hidden
+            button.alphaValue = hidden ? 0 : 1
+            button.isEnabled = !hidden
+        }
     }
 
     private func screenAtPointer() -> NSScreen? {

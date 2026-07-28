@@ -77,6 +77,7 @@ struct ContentView: View {
     // 简洁的纯色按钮样式
     private static let buttonColor = Color.blue
     private static let clearButtonColor = Color.red
+    private static let bottomShelfCornerRadius: CGFloat = 26
     
     enum ContentCategory: String, CaseIterable {
         case all = "全部"
@@ -467,7 +468,12 @@ struct ContentView: View {
     }
 
     private var bottomShelfLayout: some View {
-        VStack(spacing: 0) {
+        let shelfShape = RoundedRectangle(
+            cornerRadius: Self.bottomShelfCornerRadius,
+            style: .continuous
+        )
+
+        return VStack(spacing: 0) {
             bottomShelfToolbar
             dividerLine
             bottomShelfItems
@@ -488,11 +494,12 @@ struct ContentView: View {
                 )
                 .allowsHitTesting(false)
             }
+            .clipShape(shelfShape)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .clipShape(shelfShape)
         .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(
+            shelfShape
+                .strokeBorder(
                     LinearGradient(
                         colors: [Color.white.opacity(0.36), Color.white.opacity(0.08)],
                         startPoint: .topLeading,
@@ -503,6 +510,7 @@ struct ContentView: View {
         )
         .shadow(color: .black.opacity(0.22), radius: 24, y: 10)
         .padding(8)
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     @ViewBuilder
@@ -580,7 +588,8 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 if newValue {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        // 窗口显示时重置选中状态
+                        // 窗口显示并成为 key window 后，默认将输入焦点交给搜索框。
+                        self.isSearchFocused = true
                         self.selectedIndex = nil
                     }
                 } else {
@@ -682,18 +691,28 @@ struct ContentView: View {
             }
         }
         .background(
-            CommandNumberKeyMonitor { number in
-                guard !showSettings, !showShortcutsHelp else { return false }
+            CommandShortcutKeyMonitor(
+                numberAction: { number in
+                    guard !showSettings, !showShortcutsHelp else { return false }
 
-                switch handleNumberKey(number) {
-                case .handled:
+                    switch handleNumberKey(number) {
+                    case .handled:
+                        return true
+                    case .ignored:
+                        return false
+                    @unknown default:
+                        return false
+                    }
+                },
+                searchAction: {
+                    guard !showSettings, !showShortcutsHelp else { return false }
+
+                    DispatchQueue.main.async {
+                        isSearchFocused = true
+                    }
                     return true
-                case .ignored:
-                    return false
-                @unknown default:
-                    return false
                 }
-            }
+            )
             .frame(width: 0, height: 0)
         )
         .focusable(true)
@@ -1229,6 +1248,8 @@ struct ClipboardShelfItemView: View {
     @State private var isHovered = false
     @State private var isFavorite = false
     @State private var showDeleteConfirmation = false
+    @State private var selectionScale: CGFloat = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var accentColor: Color {
         switch item.type {
@@ -1303,21 +1324,25 @@ struct ClipboardShelfItemView: View {
         )
         .shadow(
             color: isSelected ? Color.accentColor.opacity(0.28) : Color.black.opacity(isHovered ? 0.2 : 0.11),
-            radius: isSelected ? 13 : (isHovered ? 10 : 6),
-            y: isHovered || isSelected ? 6 : 3
+            radius: isSelected ? 9 : (isHovered ? 7 : 6),
+            y: isHovered || isSelected ? 4 : 3
         )
-        .scaleEffect(isHovered ? 1.018 : 1)
+        .compositingGroup()
+        .scaleEffect(selectionScale)
         .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-        .gesture(itemClickGesture)
+        .simultaneousGesture(singleClickGesture)
+        .simultaneousGesture(doubleClickGesture)
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.16)) {
-                isHovered = hovering
-            }
+            isHovered = hovering
         }
         .contextMenu { contextMenuContent }
         .help(itemHelp)
         .onAppear {
             isFavorite = FavoriteManager.shared.isFavorite(item)
+            selectionScale = isSelected ? 1.01 : 1
+        }
+        .onChange(of: isSelected) { _, selected in
+            updateSelectionScale(selected)
         }
         .onReceive(FavoriteManager.shared.$favoriteItems) { _ in
             isFavorite = FavoriteManager.shared.isFavorite(item)
@@ -1397,15 +1422,26 @@ struct ClipboardShelfItemView: View {
         .background(.ultraThinMaterial.opacity(0.72))
     }
 
-    private var itemClickGesture: some Gesture {
+    private var singleClickGesture: some Gesture {
+        TapGesture(count: 1)
+            .onEnded { onSelect() }
+    }
+
+    private var doubleClickGesture: some Gesture {
         TapGesture(count: 2)
-            .exclusively(before: TapGesture(count: 1))
-            .onEnded { gesture in
-                switch gesture {
-                case .first: onPaste()
-                case .second: onSelect()
-                }
-            }
+            .onEnded { onPaste() }
+    }
+
+    private func updateSelectionScale(_ selected: Bool) {
+        let targetScale: CGFloat = selected ? 1.01 : 1
+        guard SettingsManager.shared.enableAnimations, !reduceMotion else {
+            selectionScale = targetScale
+            return
+        }
+
+        withAnimation(.easeOut(duration: 0.14)) {
+            selectionScale = targetScale
+        }
     }
 
     @ViewBuilder
@@ -3868,13 +3904,14 @@ struct VisualEffectView: NSViewRepresentable {
     }
 }
 
-/// Captures Command+1...9 before a focused search field consumes the key event.
+/// Captures window-level Command shortcuts before a focused child view consumes the key event.
 /// Returning nil from the local monitor also prevents the system alert sound.
-struct CommandNumberKeyMonitor: NSViewRepresentable {
-    let action: (Int) -> Bool
+struct CommandShortcutKeyMonitor: NSViewRepresentable {
+    let numberAction: (Int) -> Bool
+    let searchAction: () -> Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(action: action)
+        Coordinator(numberAction: numberAction, searchAction: searchAction)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -3883,7 +3920,8 @@ struct CommandNumberKeyMonitor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.action = action
+        context.coordinator.numberAction = numberAction
+        context.coordinator.searchAction = searchAction
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -3891,11 +3929,13 @@ struct CommandNumberKeyMonitor: NSViewRepresentable {
     }
 
     final class Coordinator {
-        var action: (Int) -> Bool
+        var numberAction: (Int) -> Bool
+        var searchAction: () -> Bool
         private var monitor: Any?
 
-        init(action: @escaping (Int) -> Bool) {
-            self.action = action
+        init(numberAction: @escaping (Int) -> Bool, searchAction: @escaping () -> Bool) {
+            self.numberAction = numberAction
+            self.searchAction = searchAction
         }
 
         func install() {
@@ -3906,14 +3946,21 @@ struct CommandNumberKeyMonitor: NSViewRepresentable {
                       !event.isARepeat,
                       event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command],
                       let characters = event.charactersIgnoringModifiers,
-                      characters.count == 1,
-                      let number = Int(characters),
-                      (1...9).contains(number),
-                      self.action(number) else {
+                      characters.count == 1 else {
                     return event
                 }
 
-                return nil
+                if characters.lowercased() == "f" {
+                    return self.searchAction() ? nil : event
+                }
+
+                if let number = Int(characters),
+                   (1...9).contains(number),
+                   self.numberAction(number) {
+                    return nil
+                }
+
+                return event
             }
         }
 
