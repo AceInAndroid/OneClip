@@ -760,6 +760,7 @@ struct ContentView: View {
         }
         .background(keyboardShortcutMonitor)
         .focusable(true)
+        .focusEffectDisabled()
         .onKeyPress(.escape) {
             // ESC 键隐藏窗口并隐藏Dock图标
             // ESC键被按下，隐藏窗口
