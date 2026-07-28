@@ -3,6 +3,11 @@ import CoreGraphics
 import AppKit
 import ApplicationServices
 
+enum ClipboardNavigationDirection {
+    case previous
+    case next
+}
+
 // 确保ClipboardItemRowView可以被找到
 // ClipboardItemRowView在同一个模块中定义
 
@@ -318,49 +323,55 @@ struct ContentView: View {
     }
     
     private var clipboardItemsList: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(spacing: 10) {
-                if filteredItems.isEmpty {
-                    if settingsManager.isFirstLaunch && !settingsManager.hasShownWelcome {
-                        WelcomeStateView()
-                            .onAppear {
-                                settingsManager.markWelcomeShown()
-                            }
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 10) {
+                    if filteredItems.isEmpty {
+                        if settingsManager.isFirstLaunch && !settingsManager.hasShownWelcome {
+                            WelcomeStateView()
+                                .onAppear {
+                                    settingsManager.markWelcomeShown()
+                                }
+                        } else {
+                            EmptyStateView()
+                        }
                     } else {
-                        EmptyStateView()
-                    }
-                } else {
-                    ForEach(filteredItems.indices, id: \.self) { index in
-                        let item = filteredItems[index]
-                        ClipboardItemRowView(
-                             item: item,
-                             onCopy: {
-                                 clipboardManager.copyToClipboard(item: item)
-                                 showCopyFeedback()
-                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                     self.hideWindow()
-                                 }
-                             },
-                             onSelect: {
-                                 selectedIndex = index
-                             },
-                             onPaste: {
-                                 performSmartPaste(item: item)
-                             },
-                             onDelete: {
-                                 clipboardManager.deleteItem(item)
-                                 showDeleteFeedback()
-                             },
-                             index: index,
-                             isSelected: selectedIndex == index
-                         )
-                        .buttonStyle(PlainButtonStyle())
-                        .transition(.opacity)
+                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                            ClipboardItemRowView(
+                                item: item,
+                                onCopy: {
+                                    clipboardManager.copyToClipboard(item: item)
+                                    showCopyFeedback()
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                        self.hideWindow()
+                                    }
+                                },
+                                onSelect: {
+                                    selectedIndex = index
+                                },
+                                onPaste: {
+                                    performSmartPaste(item: item)
+                                },
+                                onDelete: {
+                                    clipboardManager.deleteItem(item)
+                                    showDeleteFeedback()
+                                },
+                                index: index,
+                                isSelected: selectedIndex == index
+                            )
+                            .id(item.id)
+                            .buttonStyle(PlainButtonStyle())
+                            .transition(.opacity)
+                        }
                     }
                 }
+                .scrollTargetLayout()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .onChange(of: selectedIndex) { _, index in
+                scrollToSelectedItem(index, using: proxy)
+            }
         }
     }
 
@@ -421,50 +432,56 @@ struct ContentView: View {
     }
 
     private var bottomShelfItems: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 12) {
-                if filteredItems.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "clipboard")
-                            .font(.system(size: 24, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text("暂无剪贴板内容")
-                            .font(.system(.callout, design: .rounded, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 220, height: 170)
-                } else {
-                    ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
-                        ClipboardShelfItemView(
-                            item: item,
-                            index: index,
-                            isSelected: selectedIndex == index,
-                            onCopy: {
-                                clipboardManager.copyToClipboard(item: item)
-                                showCopyFeedback()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                    self.hideWindow()
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 12) {
+                    if filteredItems.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "clipboard")
+                                .font(.system(size: 24, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text("暂无剪贴板内容")
+                                .font(.system(.callout, design: .rounded, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(width: 220, height: 170)
+                    } else {
+                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                            ClipboardShelfItemView(
+                                item: item,
+                                index: index,
+                                isSelected: selectedIndex == index,
+                                onCopy: {
+                                    clipboardManager.copyToClipboard(item: item)
+                                    showCopyFeedback()
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                        self.hideWindow()
+                                    }
+                                },
+                                onSelect: {
+                                    selectedIndex = index
+                                },
+                                onPaste: {
+                                    performSmartPaste(item: item)
+                                },
+                                onDelete: {
+                                    clipboardManager.deleteItem(item)
+                                    showDeleteFeedback()
                                 }
-                            },
-                            onSelect: {
-                                selectedIndex = index
-                            },
-                            onPaste: {
-                                performSmartPaste(item: item)
-                            },
-                            onDelete: {
-                                clipboardManager.deleteItem(item)
-                                showDeleteFeedback()
-                            }
-                        )
+                            )
+                            .id(item.id)
+                        }
                     }
                 }
+                .scrollTargetLayout()
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
             }
-            .scrollTargetLayout()
-            .padding(.horizontal, 18)
-            .padding(.bottom, 16)
+            .scrollTargetBehavior(.viewAligned)
+            .onChange(of: selectedIndex) { _, index in
+                scrollToSelectedItem(index, using: proxy)
+            }
         }
-        .scrollTargetBehavior(.viewAligned)
     }
 
     private var bottomShelfLayout: some View {
@@ -711,6 +728,16 @@ struct ContentView: View {
                         isSearchFocused = true
                     }
                     return true
+                },
+                navigationAction: { direction in
+                    guard !showSettings,
+                          !showShortcutsHelp,
+                          !showClearAllConfirmation,
+                          !showDeleteConfirmation else {
+                        return false
+                    }
+
+                    return handleArrowNavigation(direction)
                 }
             )
             .frame(width: 0, height: 0)
@@ -831,35 +858,61 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(.upArrow) {
-            // 上键导航：支持循环导航
-            if filteredItems.isEmpty { return .handled }
-            
-            if let currentIndex = selectedIndex {
-                // 如果当前有选中项，向上移动（支持循环）
-                selectedIndex = currentIndex > 0 ? currentIndex - 1 : filteredItems.count - 1
-            } else {
-                // 如果没有选中项，选中最后一个
-                selectedIndex = filteredItems.count - 1
-            }
-            return .handled
+            handleArrowNavigation(.previous) ? .handled : .ignored
+        }
+        .onKeyPress(.leftArrow) {
+            handleArrowNavigation(.previous) ? .handled : .ignored
         }
         .onKeyPress(.downArrow) {
-            // 下键导航：支持循环导航
-            if filteredItems.isEmpty { return .handled }
-            
-            if let currentIndex = selectedIndex {
-                // 如果当前有选中项，向下移动（支持循环）
-                selectedIndex = currentIndex < filteredItems.count - 1 ? currentIndex + 1 : 0
-            } else {
-                // 如果没有选中项，选中第一个
-                selectedIndex = 0
-            }
-            return .handled
+            handleArrowNavigation(.next) ? .handled : .ignored
+        }
+        .onKeyPress(.rightArrow) {
+            handleArrowNavigation(.next) ? .handled : .ignored
         }
     }
-    
+
     // MARK: - 应用内快捷键处理
-    
+
+    private func handleArrowNavigation(_ direction: ClipboardNavigationDirection) -> Bool {
+        guard windowManager.isWindowVisible, !filteredItems.isEmpty else {
+            return false
+        }
+
+        clipboardManager.updateUserActivity()
+
+        switch direction {
+        case .previous:
+            if let currentIndex = selectedIndex,
+               filteredItems.indices.contains(currentIndex) {
+                selectedIndex = currentIndex > 0 ? currentIndex - 1 : filteredItems.count - 1
+            } else {
+                selectedIndex = filteredItems.count - 1
+            }
+        case .next:
+            if let currentIndex = selectedIndex,
+               filteredItems.indices.contains(currentIndex) {
+                selectedIndex = currentIndex < filteredItems.count - 1 ? currentIndex + 1 : 0
+            } else {
+                selectedIndex = 0
+            }
+        }
+
+        return true
+    }
+
+    private func scrollToSelectedItem(_ index: Int?, using proxy: ScrollViewProxy) {
+        guard let index, filteredItems.indices.contains(index) else { return }
+
+        let itemID = filteredItems[index].id
+        if settingsManager.enableAnimations {
+            withAnimation(.easeOut(duration: 0.12)) {
+                proxy.scrollTo(itemID, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(itemID, anchor: .center)
+        }
+    }
+
     private func handleNumberKey(_ number: Int) -> KeyPress.Result {
         // 立即激活用户活动状态，确保快捷键响应及时
         clipboardManager.updateUserActivity()
@@ -3909,9 +3962,14 @@ struct VisualEffectView: NSViewRepresentable {
 struct CommandShortcutKeyMonitor: NSViewRepresentable {
     let numberAction: (Int) -> Bool
     let searchAction: () -> Bool
+    let navigationAction: (ClipboardNavigationDirection) -> Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(numberAction: numberAction, searchAction: searchAction)
+        Coordinator(
+            numberAction: numberAction,
+            searchAction: searchAction,
+            navigationAction: navigationAction
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -3922,6 +3980,7 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.numberAction = numberAction
         context.coordinator.searchAction = searchAction
+        context.coordinator.navigationAction = navigationAction
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -3931,20 +3990,50 @@ struct CommandShortcutKeyMonitor: NSViewRepresentable {
     final class Coordinator {
         var numberAction: (Int) -> Bool
         var searchAction: () -> Bool
+        var navigationAction: (ClipboardNavigationDirection) -> Bool
         private var monitor: Any?
 
-        init(numberAction: @escaping (Int) -> Bool, searchAction: @escaping () -> Bool) {
+        init(
+            numberAction: @escaping (Int) -> Bool,
+            searchAction: @escaping () -> Bool,
+            navigationAction: @escaping (ClipboardNavigationDirection) -> Bool
+        ) {
             self.numberAction = numberAction
             self.searchAction = searchAction
+            self.navigationAction = navigationAction
         }
 
         func install() {
             guard monitor == nil else { return }
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self,
-                      !event.isARepeat,
-                      event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command],
+                guard let self else { return event }
+
+                let userModifiers = event.modifierFlags.intersection([
+                    .command,
+                    .control,
+                    .option,
+                    .shift
+                ])
+
+                if userModifiers.isEmpty {
+                    let direction: ClipboardNavigationDirection?
+                    switch event.keyCode {
+                    case 123, 126: // Left / Up
+                        direction = .previous
+                    case 124, 125: // Right / Down
+                        direction = .next
+                    default:
+                        direction = nil
+                    }
+
+                    if let direction, self.navigationAction(direction) {
+                        return nil
+                    }
+                }
+
+                guard !event.isARepeat,
+                      userModifiers == [.command],
                       let characters = event.charactersIgnoringModifiers,
                       characters.count == 1 else {
                     return event
