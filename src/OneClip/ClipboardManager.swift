@@ -2,10 +2,94 @@ import Foundation
 import AppKit
 import Combine
 import CoreGraphics
+import ImageIO
 import PDFKit
 import UserNotifications
 
 // 确保能访问 ClipboardItemType 和 ClipboardItem
+
+enum ClipboardPayloadLimits {
+    static let maxFormattedTextBytes = 8 * 1024 * 1024
+    static let maxStoredFormattedTextBytes = maxFormattedTextBytes + 64 * 1024
+    static let maxImageBytes: Int64 = 50 * 1024 * 1024
+    static let maxImagePixels: Int64 = 40_000_000
+
+    static func acceptsFormattedText(byteCount: Int) -> Bool {
+        byteCount > 0 && byteCount <= maxFormattedTextBytes
+    }
+
+    static func acceptsStoredFormattedText(byteCount: Int) -> Bool {
+        byteCount > 0 && byteCount <= maxStoredFormattedTextBytes
+    }
+
+    static func acceptsImage(byteCount: Int, pixelWidth: Int64, pixelHeight: Int64) -> Bool {
+        guard byteCount > 0,
+              Int64(byteCount) <= maxImageBytes,
+              pixelWidth > 0,
+              pixelHeight > 0,
+              pixelWidth <= Int64.max / pixelHeight else {
+            return false
+        }
+        return pixelWidth * pixelHeight <= maxImagePixels
+    }
+}
+
+enum ClipboardWriteValue {
+    case string(String, NSPasteboard.PasteboardType)
+    case data(Data, NSPasteboard.PasteboardType)
+}
+
+struct ClipboardWritePlan {
+    private let values: [ClipboardWriteValue]
+    private let fileURLs: [URL]
+
+    init(values: [ClipboardWriteValue]) {
+        self.values = values
+        self.fileURLs = []
+    }
+
+    init(fileURLs: [URL]) {
+        self.values = []
+        self.fileURLs = fileURLs
+    }
+
+    var isValid: Bool {
+        !values.isEmpty || !fileURLs.isEmpty
+    }
+
+    func commit(to pasteboard: NSPasteboard) -> Bool {
+        guard isValid else { return false }
+
+        pasteboard.clearContents()
+
+        if !fileURLs.isEmpty {
+            let objects = fileURLs.map { $0 as NSURL }
+            if pasteboard.writeObjects(objects) {
+                return true
+            }
+
+            pasteboard.clearContents()
+            return pasteboard.setPropertyList(
+                fileURLs.map(\.path),
+                forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")
+            )
+        }
+
+        for value in values {
+            let succeeded: Bool
+            switch value {
+            case let .string(string, type):
+                succeeded = pasteboard.setString(string, forType: type)
+            case let .data(data, type):
+                succeeded = pasteboard.setData(data, forType: type)
+            }
+
+            guard succeeded else { return false }
+        }
+
+        return true
+    }
+}
 
 class ClipboardManager: ObservableObject {
     static let shared = ClipboardManager()
@@ -30,7 +114,7 @@ class ClipboardManager: ObservableObject {
     
     // 性能优化：内存管理
     private let maxImageSize: Int = 10 * 1024 * 1024 // 10MB
-    private let maxClipboardImageBytes: Int64 = 50 * 1024 * 1024
+    private let maxClipboardImageBytes = ClipboardPayloadLimits.maxImageBytes
     private var imageCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.totalCostLimit = 50 * 1024 * 1024 // 50MB
@@ -80,7 +164,7 @@ class ClipboardManager: ObservableObject {
     private var lastContentHash: String = ""
     private var lastContentTime: Date = Date.distantPast
     private let duplicateTimeWindow: TimeInterval = 0.5 // 减少到0.5秒，允许快速复制不同内容
-    private let maxFormattedTextPayloadBytes = 8 * 1024 * 1024
+    private var copyOperationGeneration: UInt64 = 0
 
     private struct FormattedTextPayload: Codable {
         let version: Int
@@ -523,6 +607,7 @@ class ClipboardManager: ObservableObject {
 
         // 4. 少数应用只提供 RTF，使用其可见字符串作为纯文本回退。
         if let rtfData = pasteboard.data(forType: .rtf),
+           ClipboardPayloadLimits.acceptsFormattedText(byteCount: rtfData.count),
            let attributedString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
             let plainText = ClipboardTextSanitizer.clean(attributedString.string)
             if !plainText.isEmpty {
@@ -535,7 +620,8 @@ class ClipboardManager: ObservableObject {
         }
 
         // 5. 最后处理仅提供 HTML 的文本来源。
-        if let htmlData = pasteboard.data(forType: .html) {
+        if let htmlData = pasteboard.data(forType: .html),
+           ClipboardPayloadLimits.acceptsFormattedText(byteCount: htmlData.count) {
             let plainText = extractPlainTextFromHTML(htmlData)
             if !plainText.isEmpty {
                 addTextClipboardItem(
@@ -576,37 +662,55 @@ class ClipboardManager: ObservableObject {
     }
 
     private func captureFormattedText(from pasteboard: NSPasteboard) -> Data? {
-        var remainingBytes = maxFormattedTextPayloadBytes
+        let availableTypes = Set(pasteboard.types ?? [])
 
-        func capturedData(for type: NSPasteboard.PasteboardType) -> Data? {
-            guard let data = pasteboard.data(forType: type),
-                  !data.isEmpty,
-                  data.count <= remainingBytes else {
+        // 只保存一种原始格式，避免 Excel 同时提供 RTF/HTML 时产生双倍内存峰值。
+        // RTF 对表格与常见富文本的兼容性更稳定，缺失时再使用 HTML。
+        for type in [NSPasteboard.PasteboardType.rtf, .html] where availableTypes.contains(type) {
+            guard let data = autoreleasepool(invoking: { pasteboard.data(forType: type) }) else {
+                continue
+            }
+            guard ClipboardPayloadLimits.acceptsFormattedText(byteCount: data.count) else {
+                logger.warning("富文本格式数据超过 8MB，已降级为纯文本历史记录")
                 return nil
             }
-            remainingBytes -= data.count
-            return data
+
+            let payload = FormattedTextPayload(
+                version: 1,
+                rtf: type == .rtf ? data : nil,
+                html: type == .html ? data : nil
+            )
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+
+            guard let encoded = try? encoder.encode(payload),
+                  ClipboardPayloadLimits.acceptsStoredFormattedText(byteCount: encoded.count) else {
+                logger.warning("富文本格式数据编码失败或超过存储上限，已降级为纯文本历史记录")
+                return nil
+            }
+            return encoded
         }
 
-        let rtfData = capturedData(for: .rtf)
-        let htmlData = capturedData(for: .html)
-        let payload = FormattedTextPayload(version: 1, rtf: rtfData, html: htmlData)
-        guard payload.hasContent else { return nil }
-
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        return try? encoder.encode(payload)
+        return nil
     }
 
     private func formattedTextPayload(for item: ClipboardItem) -> FormattedTextPayload? {
         guard item.type == .text else { return nil }
 
         let data: Data?
-        if let inMemoryData = item.data, !inMemoryData.isEmpty {
+        if let inMemoryData = item.data,
+           ClipboardPayloadLimits.acceptsStoredFormattedText(byteCount: inMemoryData.count) {
             data = inMemoryData
         } else if let filePath = item.filePath,
                   URL(fileURLWithPath: filePath).pathExtension == "richtext" {
-            data = try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedIfSafe)
+            let url = URL(fileURLWithPath: filePath)
+            let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard let fileSize,
+                  ClipboardPayloadLimits.acceptsStoredFormattedText(byteCount: fileSize) else {
+                logger.warning("富文本历史载荷不存在或超过安全上限，已降级为纯文本")
+                return nil
+            }
+            data = try? Data(contentsOf: url, options: .mappedIfSafe)
         } else {
             data = nil
         }
@@ -614,11 +718,17 @@ class ClipboardManager: ObservableObject {
         guard let data, !data.isEmpty else { return nil }
 
         if let payload = try? PropertyListDecoder().decode(FormattedTextPayload.self, from: data),
-           payload.hasContent {
+           payload.version == 1,
+           payload.hasContent,
+           formattedPayloadIsWithinLimits(payload) {
             return payload
         }
 
         // Backward compatibility for history created before the structured payload format.
+        guard ClipboardPayloadLimits.acceptsFormattedText(byteCount: data.count) else {
+            logger.warning("旧版富文本历史载荷超过 8MB，已降级为纯文本")
+            return nil
+        }
         if NSAttributedString(rtf: data, documentAttributes: nil) != nil {
             return FormattedTextPayload(version: 0, rtf: data, html: nil)
         }
@@ -628,8 +738,19 @@ class ClipboardManager: ObservableObject {
         return nil
     }
 
+    private func formattedPayloadIsWithinLimits(_ payload: FormattedTextPayload) -> Bool {
+        let rtfBytes = payload.rtf?.count ?? 0
+        let htmlBytes = payload.html?.count ?? 0
+        guard rtfBytes <= Int.max - htmlBytes else { return false }
+        return ClipboardPayloadLimits.acceptsFormattedText(byteCount: rtfBytes + htmlBytes)
+    }
+
     // 从 HTML 中提取纯文本；系统解析器能正确处理实体、表格换行和 Office HTML。
     private func extractPlainTextFromHTML(_ htmlData: Data) -> String {
+        guard ClipboardPayloadLimits.acceptsFormattedText(byteCount: htmlData.count) else {
+            return ""
+        }
+
         let options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
             .documentType: NSAttributedString.DocumentType.html,
             .characterEncoding: String.Encoding.utf8.rawValue
@@ -831,6 +952,8 @@ class ClipboardManager: ObservableObject {
     }
     
     private func hasImageContent(_ pasteboard: NSPasteboard) -> Bool {
+        let availableTypes = Set(pasteboard.types ?? [])
+
         // 先检查是否有真实的图片格式（非图标）
         let realImageTypes: [NSPasteboard.PasteboardType] = [
             .tiff, .png,
@@ -845,9 +968,9 @@ class ClipboardManager: ObservableObject {
             NSPasteboard.PasteboardType("public.avif")
         ]
         
-        // 检查是否有真实图片数据
+        // 只检查类型声明，不为检测而提前加载一遍大图片数据。
         let hasRealImageData = realImageTypes.contains { type in
-            pasteboard.data(forType: type) != nil
+            availableTypes.contains(type)
         }
         
         if hasRealImageData {
@@ -858,7 +981,7 @@ class ClipboardManager: ObservableObject {
         // 如果同时存在文件URL和ICNS但没有真实图片数据，可能只是文件图标
         if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
            !fileURLs.isEmpty,
-           pasteboard.data(forType: NSPasteboard.PasteboardType("com.apple.icns")) != nil {
+           availableTypes.contains(NSPasteboard.PasteboardType("com.apple.icns")) {
             logger.debug("只有文件URL和ICNS图标，无真实图片数据，不认为是图片内容")
             return false
         }
@@ -900,9 +1023,9 @@ class ClipboardManager: ObservableObject {
         
         logger.debug("检查剪贴板中的图片内容，可用类型: \(pasteboard.types ?? [])")
         
-        // 检查是否有任何图片类型的数据
+        // 检查是否声明了图片类型；真正的数据只在处理阶段读取一次。
         for type in imageTypes {
-            if pasteboard.data(forType: type) != nil {
+            if availableTypes.contains(type) {
                 logger.debug("检测到图片类型: \(type.rawValue)")
                 return true
             }
@@ -979,7 +1102,7 @@ class ClipboardManager: ObservableObject {
             return
         }
 
-        guard Int64(data.count) < maxClipboardImageBytes else {
+        guard Int64(data.count) <= maxClipboardImageBytes else {
             logger.warning("图片超过 50MB，已跳过预览存储以保护内存")
             return
         }
@@ -2064,41 +2187,61 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    func copyToClipboard(item: ClipboardItem, preservingFormatting: Bool = true) {
+    @discardableResult
+    func copyToClipboard(
+        item: ClipboardItem,
+        preservingFormatting: Bool = true,
+        pasteboard: NSPasteboard = .general
+    ) -> Bool {
         logger.info("准备复制项目到剪贴板: \(item.type.displayName)")
         
         // 设置标志位防止重复监控
         isPerformingCopyOperation = true
         copyOperationTimestamp = Date().timeIntervalSince1970
-        
-        let pasteboard = NSPasteboard.general
-        
-        pasteboard.clearContents()
-        
+        copyOperationGeneration &+= 1
+        let operationGeneration = copyOperationGeneration
+
         // 延迟重置标志位
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.isPerformingCopyOperation = false
+            guard let self, self.copyOperationGeneration == operationGeneration else { return }
+            self.isPerformingCopyOperation = false
         }
         
         do {
+            let writePlan: ClipboardWritePlan
             switch item.type {
             case .text:
-                try copyTextToClipboard(
+                writePlan = try prepareTextClipboardWrite(
                     item,
-                    pasteboard: pasteboard,
                     preservingFormatting: preservingFormatting
                 )
                 
             case .image:
-                try copyImageToClipboard(item, pasteboard: pasteboard)
+                writePlan = try prepareImageClipboardWrite(item)
                 
             case .file, .video, .audio, .document, .code, .archive, .executable:
-                // 所有文件类型都使用文件复制逻辑
-                try copyFileToClipboard(item, pasteboard: pasteboard)
+                writePlan = try prepareFileClipboardWrite(item)
             }
+
+            guard writePlan.commit(to: pasteboard) else {
+                throw ClipboardError.fileOperationFailed
+            }
+
+            if pasteboard.name == NSPasteboard.Name.general {
+                lastChangeCount = pasteboard.changeCount
+            }
+            logger.info("剪贴板写入成功: \(item.type.displayName)")
+            return true
         } catch {
             logger.error("复制失败: \(error.localizedDescription)")
             FeedbackManager.shared.showError("复制失败: \(error.localizedDescription)")
+            if copyOperationGeneration == operationGeneration {
+                isPerformingCopyOperation = false
+            }
+            if pasteboard.name == NSPasteboard.Name.general {
+                lastChangeCount = pasteboard.changeCount
+            }
+            return false
         }
     }
 
@@ -2125,31 +2268,35 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    private func copyTextToClipboard(
+    private func prepareTextClipboardWrite(
         _ item: ClipboardItem,
-        pasteboard: NSPasteboard,
         preservingFormatting: Bool
-    ) throws {
+    ) throws -> ClipboardWritePlan {
         // 验证文本内容
         guard !item.content.isEmpty else {
             throw ClipboardError.dataCorrupted
         }
-        pasteboard.setString(item.content, forType: .string)
+
+        var values: [ClipboardWriteValue] = [
+            .string(item.content, .string)
+        ]
 
         if preservingFormatting, let payload = formattedTextPayload(for: item) {
             if let rtfData = payload.rtf {
-                pasteboard.setData(rtfData, forType: .rtf)
+                values.append(.data(rtfData, .rtf))
             }
             if let htmlData = payload.html {
-                pasteboard.setData(htmlData, forType: .html)
+                values.append(.data(htmlData, .html))
             }
             logger.info("文本已按原格式复制到剪贴板")
         } else {
             logger.info("文本已按纯文本复制到剪贴板")
         }
+
+        return ClipboardWritePlan(values: values)
     }
     
-    private func copyImageToClipboard(_ item: ClipboardItem, pasteboard: NSPasteboard) throws {
+    private func prepareImageClipboardWrite(_ item: ClipboardItem) throws -> ClipboardWritePlan {
         // 优先使用内存中的数据，如果没有则从磁盘加载
         var imageData = item.data
         
@@ -2159,8 +2306,15 @@ class ClipboardManager: ObservableObject {
             
             if let filePath = item.filePath {
                 let url = URL(fileURLWithPath: filePath)
+                let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                guard let fileSize,
+                      fileSize > 0,
+                      Int64(fileSize) <= maxClipboardImageBytes else {
+                    logger.error("图片文件不存在或超过 50MB 安全上限")
+                    throw ClipboardError.imageProcessingFailed
+                }
                 do {
-                    imageData = try Data(contentsOf: url)
+                    imageData = try Data(contentsOf: url, options: .mappedIfSafe)
                     logger.info("成功从磁盘加载图片数据，大小: \(imageData?.count ?? 0) 字节")
                 } catch {
                     logger.error("从磁盘加载图片失败: \(error.localizedDescription)")
@@ -2176,29 +2330,46 @@ class ClipboardManager: ObservableObject {
             logger.error("图片数据无效或为空")
             throw ClipboardError.dataCorrupted
         }
-        
-        guard let nsImage = NSImage(data: data) else {
-            logger.error("无法从数据创建NSImage")
+
+        guard Int64(data.count) <= maxClipboardImageBytes else {
+            logger.error("图片超过 50MB 安全上限")
             throw ClipboardError.imageProcessingFailed
         }
-        
-        // 支持多种图片格式，确保兼容性
-        let tiffData = nsImage.tiffRepresentation ?? data
-        let pngData = NSBitmapImageRep(data: tiffData)?.representation(using: .png, properties: [:]) ?? data
-        
-        // 设置多种格式以提高兼容性
-        pasteboard.setData(tiffData, forType: .tiff)
-        pasteboard.setData(pngData, forType: .png)
-        
-        // 尝试JPEG格式
-        if let jpegData = NSBitmapImageRep(data: tiffData)?.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) {
-            pasteboard.setData(jpegData, forType: NSPasteboard.PasteboardType("public.jpeg"))
+
+        if let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let sourceType = CGImageSourceGetType(source),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
+           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value {
+            guard ClipboardPayloadLimits.acceptsImage(
+                byteCount: data.count,
+                pixelWidth: width,
+                pixelHeight: height
+            ) else {
+                logger.error("图片像素或文件大小超过安全上限: \(width)×\(height), \(data.count) 字节")
+                throw ClipboardError.imageProcessingFailed
+            }
+
+            let pasteboardType = NSPasteboard.PasteboardType(sourceType as String)
+            logger.info("图片将以原始格式写入剪贴板: \(pasteboardType.rawValue)")
+            return ClipboardWritePlan(values: [.data(data, pasteboardType)])
         }
-        
-        logger.info("图片已复制到剪贴板")
+
+        let header = String(decoding: data.prefix(512), as: UTF8.self).lowercased()
+        if header.contains("<svg") {
+            return ClipboardWritePlan(values: [
+                .data(data, NSPasteboard.PasteboardType("public.svg-image"))
+            ])
+        }
+        if data.starts(with: Data("%PDF".utf8)) {
+            return ClipboardWritePlan(values: [.data(data, .pdf)])
+        }
+
+        logger.error("无法安全识别图片格式，拒绝执行解码转换")
+        throw ClipboardError.imageProcessingFailed
     }
     
-    private func copyFileToClipboard(_ item: ClipboardItem, pasteboard: NSPasteboard) throws {
+    private func prepareFileClipboardWrite(_ item: ClipboardItem) throws -> ClipboardWritePlan {
         logger.info("开始复制文件类型内容: \(item.content)")
         logger.debug("项目类型: \(item.type)")
         logger.debug("数据大小: \(item.data?.count ?? 0) 字节")
@@ -2287,43 +2458,17 @@ class ClipboardManager: ObservableObject {
             }
         }
         
-        // 方案3: 执行文件复制
+        // 方案3: 生成文件剪贴板写入计划
         if !fileURLs.isEmpty {
             logger.info("准备复制 \(fileURLs.count) 个文件到剪贴板")
-            
-            pasteboard.clearContents()
-            
-            // 使用最可靠的方法：writeObjects
-            let nsURLs = fileURLs.map { $0 as NSURL }
-            let success = pasteboard.writeObjects(nsURLs)
-            
-            if success {
-                logger.info("文件已成功复制到剪贴板: \(fileURLs.map { $0.lastPathComponent }.joined(separator: ", "))")
-                return
-            } else {
-                logger.warning("writeObjects失败，尝试备用方案")
-                
-                // 备用方案：使用文件路径列表
-                pasteboard.clearContents()
-                let filePaths = fileURLs.map { $0.path }
-                
-                if pasteboard.setPropertyList(filePaths, forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) {
-                    logger.info("文件已成功复制到剪贴板 (NSFilenamesPboardType)")
-                    return
-                } else {
-                    logger.error("所有文件复制方法都失败了")
-                    throw ClipboardError.fileOperationFailed
-                }
-            }
+            return ClipboardWritePlan(fileURLs: fileURLs)
         } else {
             logger.error("没有找到有效的文件路径")
-            // 最后的备用方案：将内容作为文本复制
-            pasteboard.clearContents()
-            if pasteboard.setString(item.content, forType: .string) {
-                logger.warning("已将内容作为文本复制")
-            } else {
+            guard !item.content.isEmpty else {
                 throw ClipboardError.fileOperationFailed
             }
+            logger.warning("将无法定位的文件记录降级为文本复制")
+            return ClipboardWritePlan(values: [.string(item.content, .string)])
         }
     }
     
@@ -3429,7 +3574,8 @@ class ClipboardManager: ObservableObject {
             
             for item in recentImageItems {
                 // 检查是否已在缓存中
-                if ImageCacheManager.shared.getImage(forKey: item.id.uuidString) != nil {
+                let cacheKey = ImageThumbnailDecoder.cacheKey(itemID: item.id)
+                if ImageCacheManager.shared.getImage(forKey: cacheKey) != nil {
                     continue // 已缓存，跳过
                 }
                 
@@ -3447,35 +3593,138 @@ class ClipboardManager: ObservableObject {
     /// 执行单个图片的预加载
     @MainActor
     private func performPreloadImage(item: ClipboardItem) async {
-        // 从文件路径或内存加载图片数据
-        let imageData: Data?
-        if let filePath = item.filePath, !filePath.isEmpty {
-            imageData = try? Data(contentsOf: URL(fileURLWithPath: filePath))
-        } else {
-            imageData = item.data
-        }
-        
-        guard let imageData = imageData, imageData.count > 0 else {
-            logger.debug("预加载失败：无法获取图片数据 - \(item.id)")
-            return
-        }
-        
-        // 在后台线程解码图片
-        let image = await withCheckedContinuation { continuation in
-            Task.detached(priority: .background) {
-                let nsImage = NSImage(data: imageData)
-                continuation.resume(returning: nsImage)
+        let thumbnail = await Task.detached(priority: .background) {
+            autoreleasepool {
+                guard let imageData = ImageThumbnailDecoder.imageData(for: item) else {
+                    return nil as NSImage?
+                }
+                return ImageThumbnailDecoder.makeThumbnail(from: imageData)
             }
-        }
+        }.value
         
-        if let image = image {
-            ImageCacheManager.shared.setImage(image, forKey: item.id.uuidString)
-            logger.debug("预加载完成：\(item.id)")
+        if let thumbnail {
+            ImageCacheManager.shared.setImage(
+                thumbnail,
+                forKey: ImageThumbnailDecoder.cacheKey(itemID: item.id)
+            )
+            logger.debug("缩略图预加载完成：\(item.id)")
         } else {
-            logger.debug("预加载失败：无法解码图片 - \(item.id)")
+            logger.debug("缩略图预加载失败：\(item.id)")
         }
     }
     
+}
+
+enum ImageThumbnailDecoder {
+    static let defaultMaxPixelSize = 320
+
+    struct Metadata {
+        let pixelWidth: Int
+        let pixelHeight: Int
+    }
+
+    static func cacheKey(itemID: UUID) -> String {
+        "\(itemID.uuidString)-thumbnail-\(defaultMaxPixelSize)"
+    }
+
+    static func imageData(for item: ClipboardItem) -> Data? {
+        if let data = item.data, !data.isEmpty {
+            guard Int64(data.count) <= ClipboardPayloadLimits.maxImageBytes else { return nil }
+            return data
+        }
+
+        guard let filePath = item.filePath, !filePath.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: filePath)
+        guard let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              fileSize > 0,
+              Int64(fileSize) <= ClipboardPayloadLimits.maxImageBytes else {
+            return nil
+        }
+        return try? Data(contentsOf: url, options: .mappedIfSafe)
+    }
+
+    static func metadata(from data: Data) -> Metadata? {
+        guard !data.isEmpty,
+              Int64(data.count) <= ClipboardPayloadLimits.maxImageBytes,
+              let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+              ),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value,
+              ClipboardPayloadLimits.acceptsImage(
+                byteCount: data.count,
+                pixelWidth: width,
+                pixelHeight: height
+              ),
+              width <= Int64(Int.max),
+              height <= Int64(Int.max) else {
+            return nil
+        }
+
+        return Metadata(pixelWidth: Int(width), pixelHeight: Int(height))
+    }
+
+    static func makeThumbnail(
+        from data: Data,
+        maxPixelSize: Int = defaultMaxPixelSize
+    ) -> NSImage? {
+        guard maxPixelSize > 0,
+              !data.isEmpty,
+              Int64(data.count) <= ClipboardPayloadLimits.maxImageBytes,
+              let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+              ) else {
+            return nil
+        }
+
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
+           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value,
+           !ClipboardPayloadLimits.acceptsImage(
+                byteCount: data.count,
+                pixelWidth: width,
+                pixelHeight: height
+           ) {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            options as CFDictionary
+        ) else {
+            return nil
+        }
+
+        let representation = NSBitmapImageRep(cgImage: cgImage)
+        let image = NSImage(
+            size: NSSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+        )
+        image.addRepresentation(representation)
+        return image
+    }
+
+    static func estimatedMemoryCost(of image: NSImage) -> Int {
+        let pixelWidth = image.representations.map(\.pixelsWide).max() ?? Int(image.size.width)
+        let pixelHeight = image.representations.map(\.pixelsHigh).max() ?? Int(image.size.height)
+        guard pixelWidth > 0,
+              pixelHeight > 0,
+              pixelWidth <= Int.max / pixelHeight,
+              pixelWidth * pixelHeight <= Int.max / 4 else {
+            return 0
+        }
+        return pixelWidth * pixelHeight * 4
+    }
 }
 
 class ImageCacheManager {
@@ -3485,9 +3734,9 @@ class ImageCacheManager {
     private let cache = NSCache<NSString, NSImage>()
 
     private init() {
-        // 配置缓存限制，避免占用过多内存
-        cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB
-        cache.countLimit = 100 // 最多100张图片
+        // 缓存中只保存缩略图，控制在低配置机器也可接受的范围内。
+        cache.totalCostLimit = 12 * 1024 * 1024
+        cache.countLimit = 48
     }
 
     /// 将图片存入缓存
@@ -3495,9 +3744,8 @@ class ImageCacheManager {
     ///   - image: 要缓存的 NSImage 对象
     ///   - key: 唯一的缓存键 (通常是 item.id.uuidString)
     func setImage(_ image: NSImage, forKey key: String) {
-        // 计算图片的近似内存占用
-        let cost = Int(image.size.width * image.size.height * 4) // 假设每个像素4字节
-        cache.setObject(image, forKey: key as NSString, cost: min(cost, 10 * 1024 * 1024)) // 单张图片不超过10MB
+        let cost = ImageThumbnailDecoder.estimatedMemoryCost(of: image)
+        cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 
     /// 从缓存中获取图片

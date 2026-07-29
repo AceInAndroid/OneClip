@@ -599,24 +599,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 添加剪贴板项目到菜单
         if !clipboardItems.isEmpty {
             for (index, item) in clipboardItems.enumerated() {
+                let imageData = item.type == .image
+                    ? ImageThumbnailDecoder.imageData(for: item)
+                    : nil
+                let imageMetadata = imageData.flatMap(ImageThumbnailDecoder.metadata(from:))
+                let originalTitle = menuTitle(
+                    for: item,
+                    imageMetadata: imageMetadata,
+                    imageByteCount: imageData?.count
+                )
+
                 // 处理菜单项 \(index): 类型=\(item.type), 内容=\(item.content.prefix(20))
                 let menuItem = NSMenuItem(
-                    title: menuTitle(for: item),
+                    title: originalTitle,
                     action: #selector(copyClipboardItem(_:)),
                     keyEquivalent: index < 9 ? "\(index + 1)" : ""
                 )
                 menuItem.target = self
                 menuItem.tag = index
                 
-                // 改进 tooltip 显示，使用哈希验证的数据
+                // 图片尺寸仅读取 ImageIO 元数据，不解码原图。
                 if item.type == .image {
-                    let itemHash = ClipboardManager.shared.createItemHash(item)
-                    if let validImageData = getValidatedImageData(for: item, expectedHash: itemHash),
-                       let nsImage = NSImage(data: validImageData) {
-                        let size = nsImage.size
-                        let sizeInKB = validImageData.count / 1024
-                        let format = detectImageFormat(data: validImageData)
-                        menuItem.toolTip = "图片：\(Int(size.width)) × \(Int(size.height)) 像素\n格式：\(format)\n大小：\(sizeInKB) KB"
+                    if let imageData, let imageMetadata {
+                        let sizeInKB = imageData.count / 1024
+                        let format = detectImageFormat(data: imageData)
+                        menuItem.toolTip = "图片：\(imageMetadata.pixelWidth) × \(imageMetadata.pixelHeight) 像素\n格式：\(format)\n大小：\(sizeInKB) KB"
                     } else {
                         menuItem.toolTip = "图片（数据验证失败）"
                     }
@@ -626,19 +633,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     menuItem.toolTip = truncatedContent
                 }
                 
-                // 根据类型设置图标或图片预览，使用哈希验证确保数据一致性
+                // 菜单只解码最长边 48px 的缩略图。
                 if item.type == .image {
-                    // 使用哈希验证获取正确的图片数据
-                    let itemHash = ClipboardManager.shared.createItemHash(item)
-                    if let validImageData = getValidatedImageData(for: item, expectedHash: itemHash),
-                       let nsImage = NSImage(data: validImageData) {
-                        // 为图片创建高质量缩略图
-                        let thumbnail = createThumbnail(from: nsImage, size: NSSize(width: 24, height: 24))
+                    if let imageData,
+                       let thumbnail = ImageThumbnailDecoder.makeThumbnail(
+                           from: imageData,
+                           maxPixelSize: 48
+                       ) {
+                        let scale = min(24 / thumbnail.size.width, 24 / thumbnail.size.height, 1)
+                        thumbnail.size = NSSize(
+                            width: thumbnail.size.width * scale,
+                            height: thumbnail.size.height * scale
+                        )
                         menuItem.image = thumbnail
-                        // 创建图片缩略图: \(nsImage.size), 哈希: \(itemHash.prefix(8))
                     } else if let icon = menuIcon(for: item.type) {
                         menuItem.image = icon
-                        // 图片数据验证失败，使用默认图标
                     }
                 } else if let icon = menuIcon(for: item.type) {
                     menuItem.image = icon
@@ -650,7 +659,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 menuItem.keyEquivalentModifierMask = []
                 
                 // 在标题中显示快捷键提示，使用优雅的格式
-                let originalTitle = menuTitle(for: item)
                 let favoritePrefix = item.isFavorite ? "⭐ " : ""
                 menuItem.title = "\(keyEquivalent). \(favoritePrefix)\(originalTitle)"
                 
@@ -797,6 +805,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     
     private func menuTitle(for item: ClipboardItem) -> String {
+        let imageData = item.type == .image
+            ? ImageThumbnailDecoder.imageData(for: item)
+            : nil
+        return menuTitle(
+            for: item,
+            imageMetadata: imageData.flatMap(ImageThumbnailDecoder.metadata(from:)),
+            imageByteCount: imageData?.count
+        )
+    }
+
+    private func menuTitle(
+        for item: ClipboardItem,
+        imageMetadata: ImageThumbnailDecoder.Metadata?,
+        imageByteCount: Int?
+    ) -> String {
         let content = item.content.trimmingCharacters(in: .whitespacesAndNewlines)
         let maxLength = 45
         
@@ -805,16 +828,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         switch item.type {
         case .image:
-            let itemHash = ClipboardManager.shared.createItemHash(item)
-            if let validImageData = getValidatedImageData(for: item, expectedHash: itemHash),
-               let nsImage = NSImage(data: validImageData) {
-                let size = nsImage.size
-                let sizeInKB = validImageData.count / 1024
+            if let imageMetadata, let imageByteCount {
+                let sizeInKB = imageByteCount / 1024
                 let sizeUnit = sizeInKB > 1024 ? "\(sizeInKB / 1024) MB" : "\(sizeInKB) KB"
-                
-                // 检测图片格式
-                let format = detectImageFormat(data: validImageData)
-                description = "图片 (\(Int(size.width))x\(Int(size.height)), \(format), \(sizeUnit))"
+                description = "图片 (\(imageMetadata.pixelWidth)x\(imageMetadata.pixelHeight), \(sizeUnit))"
             } else {
                 description = "图片（数据无效）"
             }
@@ -961,197 +978,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
     
-    private func createThumbnail(from image: NSImage, size: NSSize) -> NSImage? {
-        // 彻底解决 Dock 隐藏模式下图片预览问题
-        return createThumbnailWithFallback(from: image, size: size)
-    }
-    
-    // 新的强化版缩略图创建方法
-    private func createThumbnailWithFallback(from image: NSImage, size: NSSize) -> NSImage? {
-        // 计算缩略图尺寸，保持宽高比
-        let originalSize = image.size
-        guard originalSize.width > 0 && originalSize.height > 0 else {
-            // 图片尺寸无效: \(originalSize)
-            return nil
-        }
-        
-        let ratio = min(size.width / originalSize.width, size.height / originalSize.height)
-        let targetSize = NSSize(width: originalSize.width * ratio, height: originalSize.height * ratio)
-        
-        // 创建缩略图: \(originalSize) -> \(targetSize)
-        
-        // 方案1: 尝试使用 Core Graphics (更可靠)
-        if let cgImage = createThumbnailUsingCoreGraphics(from: image, targetSize: targetSize) {
-            return cgImage
-        }
-        
-        // 方案2: 尝试强制在主线程创建 (Dock 兼容)
-        if let mainThreadImage = createThumbnailOnMainThread(from: image, targetSize: targetSize) {
-            return mainThreadImage
-        }
-        
-        // 方案3: 备用简单方案
-        return createSimpleThumbnail(from: image, targetSize: targetSize)
-    }
-    
-    // Core Graphics 方案 - 最可靠，不依赖窗口状态
-    private func createThumbnailUsingCoreGraphics(from image: NSImage, targetSize: NSSize) -> NSImage? {
-        // 获取图像的最佳表示
-        guard let imageRep = image.bestRepresentation(for: NSRect(origin: .zero, size: targetSize), 
-                                                     context: nil, 
-                                                     hints: nil) else {
-            // 无法获取图像表示
-            return nil
-        }
-        
-        // 创建 CGImage
-        guard let cgImage = imageRep.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            // 无法创建 CGImage
-            return nil
-        }
-        
-        // 使用 Core Graphics 创建缩略图
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-        
-        guard let context = CGContext(data: nil,
-                                    width: Int(targetSize.width),
-                                    height: Int(targetSize.height),
-                                    bitsPerComponent: 8,
-                                    bytesPerRow: 0,
-                                    space: colorSpace,
-                                    bitmapInfo: bitmapInfo.rawValue) else {
-            // 无法创建 CGContext
-            return nil
-        }
-        
-        // 高质量缩放
-        context.interpolationQuality = .high
-        context.draw(cgImage, in: CGRect(origin: .zero, size: targetSize))
-        
-        // 创建结果图像
-        if let resultCGImage = context.makeImage() {
-            let thumbnail = NSImage(cgImage: resultCGImage, size: targetSize)
-            thumbnail.isTemplate = false
-            // Core Graphics 缩略图创建成功
-            return thumbnail
-        }
-        
-        // Core Graphics 方案失败
-        return nil
-    }
-    
-    // 主线程方案 - 强制同步执行
-    private func createThumbnailOnMainThread(from image: NSImage, targetSize: NSSize) -> NSImage? {
-        var result: NSImage?
-        
-        // 确保在主线程执行
-        if Thread.isMainThread {
-            result = createThumbnailSynchronously(from: image, targetSize: targetSize)
-        } else {
-            DispatchQueue.main.sync {
-                result = createThumbnailSynchronously(from: image, targetSize: targetSize)
-            }
-        }
-        
-        if result != nil {
-            // 主线程缩略图创建成功
-        } else {
-            // 主线程方案失败
-        }
-        
-        return result
-    }
-    
-    // 同步创建缩略图
-    private func createThumbnailSynchronously(from image: NSImage, targetSize: NSSize) -> NSImage? {
-        let thumbnail = NSImage(size: targetSize)
-        
-        // 强制设置图像属性
-        thumbnail.cacheMode = .never
-        thumbnail.isTemplate = false
-        
-        // 锁定焦点进行绘制
-        thumbnail.lockFocus()
-        defer { thumbnail.unlockFocus() }
-        
-        // 使用高质量渲染
-        if let context = NSGraphicsContext.current {
-            context.imageInterpolation = .high
-            context.shouldAntialias = true
-            context.compositingOperation = .copy
-        }
-        
-        // 绘制图像
-        image.draw(in: NSRect(origin: .zero, size: targetSize), 
-                  from: NSRect(origin: .zero, size: image.size), 
-                  operation: .copy, 
-                  fraction: 1.0)
-        
-        return thumbnail
-    }
-    
-    // 简单备用方案
-    private func createSimpleThumbnail(from image: NSImage, targetSize: NSSize) -> NSImage? {
-        // 最简单的缩放方案，不使用 lockFocus
-        let thumbnail = NSImage(size: targetSize)
-        
-        // 设置图像表示
-        let representation = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                            pixelsWide: Int(targetSize.width),
-                                            pixelsHigh: Int(targetSize.height),
-                                            bitsPerSample: 8,
-                                            samplesPerPixel: 4,
-                                            hasAlpha: true,
-                                            isPlanar: false,
-                                            colorSpaceName: .deviceRGB,
-                                            bytesPerRow: 0,
-                                            bitsPerPixel: 0)
-        
-        if let rep = representation {
-            thumbnail.addRepresentation(rep)
-        }
-        
-        thumbnail.isTemplate = false
-        // 简单缩略图创建成功
-        return thumbnail
-    }
-    
-    // 获取经过哈希验证的图片数据
-    private func getValidatedImageData(for item: ClipboardItem, expectedHash: String) -> Data? {
-        // 菜单预览：开始验证图片数据，期望哈希: \(expectedHash.prefix(8))
-        
-        // 首先检查内存中的数据
-        if let memoryData = item.data,
-           NSImage(data: memoryData) != nil {
-            // 菜单预览：内存中有有效的图片数据
-            return memoryData
-        }
-        
-        // 从磁盘重新加载
-        if let filePath = item.filePath {
-            let url = URL(fileURLWithPath: filePath)
-            if let diskData = try? Data(contentsOf: url),
-               NSImage(data: diskData) != nil {
-                // 菜单预览：从磁盘加载了有效的图片数据
-                return diskData
-            }
-        }
-        
-        // 菜单预览：无法获取有效的图片数据
-        return nil
-    }
-    
     @objc private func copyClipboardItem(_ sender: NSMenuItem) {
         let index = sender.tag
         let clipboardItems = ClipboardManager.shared.clipboardItems
         
         if index < clipboardItems.count {
             let item = clipboardItems[index]
-            ClipboardManager.shared.copyToClipboard(item: item)
-            
-            // 显示反馈
-            showMenuFeedback("已复制: \(menuTitle(for: item))")
+            if ClipboardManager.shared.copyToClipboard(item: item) {
+                showMenuFeedback("已复制: \(menuTitle(for: item))")
+            }
         }
     }
     
@@ -1295,8 +1130,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             if !clipboardItems.isEmpty {
                 // 有历史记录，直接复制最新项目
                 let latestItem = clipboardItems[0]
-                ClipboardManager.shared.copyToClipboard(item: latestItem)
-                showQuickFeedback("已复制：\(menuTitle(for: latestItem))")
+                if ClipboardManager.shared.copyToClipboard(item: latestItem) {
+                    showQuickFeedback("已复制：\(menuTitle(for: latestItem))")
+                }
                 // 快速复制最新项目：\(latestItem.content.prefix(20))
             } else {
                 // 没有历史记录，显示窗口
@@ -1531,7 +1367,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 let selectedItem = clipboardItems[selectedIndex]
                 
                 // 复制选中的内容到剪贴板
-                ClipboardManager.shared.copyToClipboard(item: selectedItem)
+                guard ClipboardManager.shared.copyToClipboard(item: selectedItem) else {
+                    self.showQuickFeedback("复制失败")
+                    return
+                }
                 
                 // 显示反馈
                 self.showQuickFeedback("已选择: \(self.menuTitle(for: selectedItem))")
@@ -1690,8 +1529,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         if !clipboardItems.isEmpty {
             let latestItem = clipboardItems[0]
-            ClipboardManager.shared.copyToClipboard(item: latestItem)
-            showQuickFeedback("快速粘贴: \(menuTitle(for: latestItem))")
+            if ClipboardManager.shared.copyToClipboard(item: latestItem) {
+                showQuickFeedback("快速粘贴: \(menuTitle(for: latestItem))")
+            }
             // 快速粘贴最新项目
         } else {
             showQuickFeedback("无历史记录可粘贴")

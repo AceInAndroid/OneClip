@@ -8,6 +8,25 @@ enum ClipboardNavigationDirection {
     case next
 }
 
+final class PasteRequestGate {
+    private let lock = NSLock()
+    private var isActive = false
+
+    func begin() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isActive else { return false }
+        isActive = true
+        return true
+    }
+
+    func finish() {
+        lock.lock()
+        isActive = false
+        lock.unlock()
+    }
+}
+
 // 确保ClipboardItemRowView可以被找到
 // ClipboardItemRowView在同一个模块中定义
 
@@ -31,6 +50,7 @@ struct ContentView: View {
     @State private var selectedIndex: Int? = nil // 当前选中的项目索引
     @State private var showDeleteConfirmation = false // 删除确认对话框
     @State private var selectedItemToDelete: ClipboardItem? = nil // 待删除的项目
+    @State private var pasteRequestGate = PasteRequestGate()
 
     // 动画辅助方法
     private func performAnimation(_ animation: Animation, action: @escaping () -> Void) {
@@ -381,7 +401,7 @@ struct ContentView: View {
                             ClipboardItemRowView(
                                 item: item,
                                 onCopy: {
-                                    clipboardManager.copyToClipboard(item: item)
+                                    guard clipboardManager.copyToClipboard(item: item) else { return }
                                     showCopyFeedback()
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                         self.hideWindow()
@@ -500,7 +520,7 @@ struct ContentView: View {
                                 index: index,
                                 isSelected: selectedIndex == index,
                                 onCopy: {
-                                    clipboardManager.copyToClipboard(item: item)
+                                    guard clipboardManager.copyToClipboard(item: item) else { return }
                                     showCopyFeedback()
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                                         self.hideWindow()
@@ -957,7 +977,7 @@ struct ContentView: View {
         }
 
         if let item = targetItem {
-            clipboardManager.copyToClipboard(item: item)
+            guard clipboardManager.copyToClipboard(item: item) else { return true }
             showCopyFeedback()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.hideWindow()
@@ -1035,7 +1055,7 @@ struct ContentView: View {
         let item = filteredItems[index]
         
         // 只复制到剪贴板，不执行粘贴
-        clipboardManager.copyToClipboard(item: item)
+        guard clipboardManager.copyToClipboard(item: item) else { return .handled }
         showCopyFeedback()
         
         // 复制完成后自动隐藏窗口
@@ -1069,56 +1089,78 @@ struct ContentView: View {
     
     // 智能粘贴功能 - 直接粘贴到光标位置
     private func performSmartPaste(item: ClipboardItem, preservingFormatting: Bool = true) {
+        guard pasteRequestGate.begin() else {
+            Logger.shared.debug("已有粘贴请求正在处理，忽略重复操作")
+            return
+        }
+
         // 先将内容复制到系统剪贴板
-        clipboardManager.copyToClipboard(
+        guard clipboardManager.copyToClipboard(
             item: item,
             preservingFormatting: preservingFormatting
-        )
+        ) else {
+            pasteRequestGate.finish()
+            return
+        }
 
-        guard AccessibilityPermissionManager.shared.checkPermissionSync() else {
+        guard AccessibilityPermissionManager.shared.checkPermissionSync(forceRefresh: true) else {
             Logger.shared.warning("直接粘贴已降级为复制：缺少辅助功能权限")
             windowManager.hideWindow()
             showFeedback(message: "已复制；启用辅助功能权限后可直接粘贴")
+            pasteRequestGate.finish()
             return
         }
 
         // 恢复唤出 PasteLight 前的应用，再把内容粘贴到原插入点。
-        windowManager.hideWindowAndRestorePreviousApplication {
-            // 窗口隐藏后再更新排序，避免双击时可见列表立即跳动。
+        windowManager.hideWindowAndRestorePreviousApplication { targetIsFrontmost in
+            defer { self.pasteRequestGate.finish() }
+
+            guard targetIsFrontmost else {
+                self.showFeedback(message: "已复制；未能返回目标应用")
+                return
+            }
+
+            guard self.sendCmdVKeyEvent() else {
+                self.showFeedback(message: "已复制；无法发送粘贴按键")
+                return
+            }
+
+            // 窗口已隐藏且粘贴事件已发出，再更新排序，避免可见列表跳动。
             self.clipboardManager.markItemAsUsed(item)
             self.selectedIndex = 0
-            self.sendCmdVKeyEvent()
+            self.showFeedback(message: preservingFormatting && item.type == .text ? "已保留格式粘贴" : "已按纯文本粘贴")
         }
-
-        // 显示反馈
-        showFeedback(message: preservingFormatting && item.type == .text ? "已保留格式粘贴" : "已按纯文本粘贴")
     }
     
     // 使用CGEvent发送Cmd+V键盘事件
-    private func sendCmdVKeyEvent() {
+    private func sendCmdVKeyEvent() -> Bool {
+        guard AccessibilityPermissionManager.shared.checkPermissionSync(forceRefresh: true) else {
+            Logger.shared.warning("发送粘贴按键前辅助功能权限已失效")
+            return false
+        }
+
         // 创建Cmd键按下事件
-        let cmdKeyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
-        cmdKeyDown?.flags = .maskCommand
-        
-        // 创建V键按下事件（带Cmd修饰符）
-        let vKeyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true)
-        vKeyDown?.flags = .maskCommand
-        
-        // 创建V键释放事件（带Cmd修饰符）
-        let vKeyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false)
-        vKeyUp?.flags = .maskCommand
-        
-        // 创建Cmd键释放事件
-        let cmdKeyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
+        guard let cmdKeyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true),
+              let vKeyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true),
+              let vKeyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false),
+              let cmdKeyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false) else {
+            Logger.shared.error("无法创建完整的 Cmd+V 键盘事件序列")
+            return false
+        }
+
+        cmdKeyDown.flags = .maskCommand
+        vKeyDown.flags = .maskCommand
+        vKeyUp.flags = .maskCommand
         
         // 发送事件序列
-        cmdKeyDown?.post(tap: .cghidEventTap)
+        cmdKeyDown.post(tap: .cghidEventTap)
         usleep(10000) // 10ms延迟
-        vKeyDown?.post(tap: .cghidEventTap)
+        vKeyDown.post(tap: .cghidEventTap)
         usleep(10000) // 10ms延迟
-        vKeyUp?.post(tap: .cghidEventTap)
+        vKeyUp.post(tap: .cghidEventTap)
         usleep(10000) // 10ms延迟
-        cmdKeyUp?.post(tap: .cghidEventTap)
+        cmdKeyUp.post(tap: .cghidEventTap)
+        return true
     }
     
     private func showFeedback(message: String, duration: TimeInterval = 2.0) {
@@ -1547,7 +1589,7 @@ struct ClipboardShelfItemView: View {
     private var preview: some View {
         Group {
             if item.type == .image {
-                ImagePreviewView(item: item)
+                CompactImagePreviewView(item: item)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
             } else {
@@ -1655,7 +1697,7 @@ struct ClipboardItemView: View {
             // 根据文件类型显示不同的预览
             switch item.type {
             case .image:
-                ImagePreviewView(item: item)
+                CompactImagePreviewView(item: item)
                     .id("\(item.id)-\(item.timestamp.timeIntervalSince1970)") // 确保每个视图唯一
             case .video:
                 VideoPreviewView(item: item)
@@ -2067,6 +2109,123 @@ struct ModernCleanupDaysStepper: View {
     }
 }
 
+struct CompactImagePreviewView: View {
+    let item: ClipboardItem
+
+    @State private var thumbnail: NSImage?
+    @State private var isLoading = false
+    @State private var loadingTask: Task<Void, Never>?
+    @EnvironmentObject private var settingsManager: SettingsManager
+
+    private var previewHeight: CGFloat {
+        switch settingsManager.previewSize {
+        case "small": return 56
+        case "large": return 96
+        default: return 72
+        }
+    }
+
+    private var previewWidth: CGFloat {
+        switch settingsManager.previewSize {
+        case "small": return 76
+        case "large": return 136
+        default: return 104
+        }
+    }
+
+    private var cacheKey: String {
+        ImageThumbnailDecoder.cacheKey(itemID: item.id)
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(4)
+                    .transition(.opacity)
+            } else {
+                VStack(spacing: 5) {
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .medium))
+                    }
+
+                    Text("图片缩略图")
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: previewWidth, height: previewHeight)
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.white.opacity(0.16), lineWidth: 0.6)
+        )
+        .frame(maxWidth: .infinity, alignment: .center)
+        .animation(.easeOut(duration: 0.12), value: thumbnail != nil)
+        .onAppear { loadThumbnail() }
+        .onChange(of: item.id) { _, _ in loadThumbnail() }
+        .onChange(of: settingsManager.previewSize) { _, _ in loadThumbnail() }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshImagePreviews"))) { _ in
+            loadThumbnail(forceReload: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ClearImagePreviewCache"))) { _ in
+            ImageCacheManager.shared.removeImage(forKey: cacheKey)
+            loadThumbnail(forceReload: true)
+        }
+        .onDisappear {
+            loadingTask?.cancel()
+            loadingTask = nil
+            thumbnail = nil
+        }
+    }
+
+    private func loadThumbnail(forceReload: Bool = false) {
+        loadingTask?.cancel()
+
+        if !forceReload,
+           let cached = ImageCacheManager.shared.getImage(forKey: cacheKey) {
+            thumbnail = cached
+            isLoading = false
+            return
+        }
+
+        let requestedItem = item
+        let requestedItemID = item.id
+        let requestedCacheKey = cacheKey
+        thumbnail = nil
+        isLoading = true
+
+        loadingTask = Task {
+            let decodedThumbnail = await Task.detached(priority: .utility) {
+                autoreleasepool {
+                    guard let data = ImageThumbnailDecoder.imageData(for: requestedItem) else {
+                        return nil as NSImage?
+                    }
+                    return ImageThumbnailDecoder.makeThumbnail(from: data)
+                }
+            }.value
+
+            guard !Task.isCancelled, item.id == requestedItemID else { return }
+            if let decodedThumbnail {
+                ImageCacheManager.shared.setImage(decodedThumbnail, forKey: requestedCacheKey)
+            }
+            thumbnail = decodedThumbnail
+            isLoading = false
+        }
+    }
+}
+
+// 旧版全尺寸预览保留用于兼容尚未迁移的内部调用；列表和横向卡片已统一使用缩略图视图。
 struct ImagePreviewView: View {
     let item: ClipboardItem
     @State private var data: Data?

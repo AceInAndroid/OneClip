@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB00000129A8B5000123456 /* OneClipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000229A8B5000123456 /* OneClipTests.swift */; };
 		AA00000129A8B4B700123456 /* OneClipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000029A8B4B700123456 /* OneClipApp.swift */; };
 		AA00000329A8B4B700123456 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000229A8B4B700123456 /* ContentView.swift */; };
 		AA00000529A8B4B800123456 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA00000429A8B4B800123456 /* Assets.xcassets */; };
@@ -31,7 +32,19 @@
 		AA00005529A8B5000123456 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005429A8B5000123456 /* AboutView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		BB00000C29A8B5000123456 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000F529A8B4B700123456 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000FC29A8B4B700123456;
+			remoteInfo = OneClip;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		BB00000229A8B5000123456 /* OneClipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneClipTests.swift; sourceTree = "<group>"; };
+		BB00000329A8B5000123456 /* OneClipTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OneClipTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000FD29A8B4B700123456 /* PasteLight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PasteLight.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00000029A8B4B700123456 /* OneClipApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneClipApp.swift; sourceTree = "<group>"; };
 		AA00000229A8B4B700123456 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -59,6 +72,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		BB00000429A8B5000123456 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA0000FA29A8B4B700123456 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -73,6 +93,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000FF29A8B4B700123456 /* OneClip */,
+				BB00000529A8B5000123456 /* OneClipTests */,
 				AA0000FE29A8B4B700123456 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -81,6 +102,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000FD29A8B4B700123456 /* PasteLight.app */,
+				BB00000329A8B5000123456 /* OneClipTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -123,9 +145,34 @@
 			path = "Preview Content";
 			sourceTree = "<group>";
 		};
+		BB00000529A8B5000123456 /* OneClipTests */ = {
+			isa = PBXGroup;
+			children = (
+				BB00000229A8B5000123456 /* OneClipTests.swift */,
+			);
+			path = OneClipTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		BB00000629A8B5000123456 /* OneClipTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00000A29A8B5000123456 /* Build configuration list for PBXNativeTarget "OneClipTests" */;
+			buildPhases = (
+				BB00000729A8B5000123456 /* Sources */,
+				BB00000429A8B5000123456 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB00000D29A8B5000123456 /* PBXTargetDependency */,
+			);
+			name = OneClipTests;
+			productName = OneClipTests;
+			productReference = BB00000329A8B5000123456 /* OneClipTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		AA0000FC29A8B4B700123456 /* OneClip */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA00000C29A8B4B800123456 /* Build configuration list for PBXNativeTarget "OneClip" */;
@@ -157,6 +204,9 @@
 						CreatedOnToolsVersion = 15.0;
 						LastSwiftMigration = 1500;
 					};
+					BB00000629A8B5000123456 = {
+						CreatedOnToolsVersion = 15.0;
+					};
 				};
 			};
 			buildConfigurationList = AA0000F829A8B4B700123456 /* Build configuration list for PBXProject "OneClip" */;
@@ -173,6 +223,7 @@
 			projectRoot = "";
 			targets = (
 				AA0000FC29A8B4B700123456 /* OneClip */,
+				BB00000629A8B5000123456 /* OneClipTests */,
 			);
 		};
 /* End PBXProject section */
@@ -190,6 +241,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		BB00000729A8B5000123456 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB00000129A8B5000123456 /* OneClipTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AA0000F929A8B4B700123456 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -220,6 +279,32 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		BB00000829A8B5000123456 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PasteLight.app/Contents/MacOS/PasteLight";
+			};
+			name = Debug;
+		};
+		BB00000929A8B5000123456 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PasteLight.app/Contents/MacOS/PasteLight";
+			};
+			name = Release;
+		};
 		AA00000A29A8B4B800123456 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -397,6 +482,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		BB00000A29A8B5000123456 /* Build configuration list for PBXNativeTarget "OneClipTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB00000829A8B5000123456 /* Debug */,
+				BB00000929A8B5000123456 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		AA0000F829A8B4B700123456 /* Build configuration list for PBXProject "OneClip" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -416,6 +510,14 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin PBXTargetDependency section */
+		BB00000D29A8B5000123456 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000FC29A8B4B700123456 /* OneClip */;
+			targetProxy = BB00000C29A8B5000123456 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 	};
 	rootObject = AA0000F529A8B4B700123456 /* Project object */;
 }

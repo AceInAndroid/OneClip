@@ -177,7 +177,7 @@ struct ClipboardItemRowView: View {
     @ViewBuilder
     private var contentView: some View {
         if item.type == .image {
-            ImagePreviewView(item: item)
+            CompactImagePreviewView(item: item)
                 .id("\(item.id)-detail-\(item.timestamp.timeIntervalSince1970)")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: 12))

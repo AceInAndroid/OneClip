@@ -72,6 +72,11 @@ class WindowManager: ObservableObject {
     private var lastToggleTime: TimeInterval = 0
     private let minToggleInterval: TimeInterval = 0.1 // 防止快速连续操作
     private var isProcessingToggle = false
+
+    static func isTargetApplicationFrontmost(targetPID: pid_t, frontmostPID: pid_t?) -> Bool {
+        frontmostPID == targetPID
+    }
+
     init() {
         self.setupApplicationActivationMonitoring()
         self.setupPreventAutoHideMonitoring()
@@ -473,17 +478,63 @@ class WindowManager: ObservableObject {
         }
     }
 
-    /// Hides OneClip, restores the app that owned the insertion point, then performs the paste action.
-    func hideWindowAndRestorePreviousApplication(completion: @escaping () -> Void) {
+    /// Hides PasteLight and confirms that the app which owned the insertion point is frontmost.
+    /// The completion is invoked exactly once and never reports success based on a fixed delay alone.
+    func hideWindowAndRestorePreviousApplication(completion: @escaping (Bool) -> Void) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                self.hideWindowAndRestorePreviousApplication(completion: completion)
+            }
+            return
+        }
+
+        guard let targetApplication = previousActiveApplication,
+              !targetApplication.isTerminated else {
+            logger.warning("无法恢复目标应用：未记录有效的前台应用")
+            hideWindow()
+            completion(false)
+            return
+        }
+
+        let targetPID = targetApplication.processIdentifier
+        let timeoutAt = Date().addingTimeInterval(0.75)
         hideWindow()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            if let previousApplication = self.previousActiveApplication,
-               !previousApplication.isTerminated {
-                previousApplication.activate(options: [])
+        func pollFrontmostApplication() {
+            guard !targetApplication.isTerminated else {
+                self.logger.warning("无法恢复目标应用：目标应用已退出")
+                completion(false)
+                return
             }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: completion)
+            let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if Self.isTargetApplicationFrontmost(targetPID: targetPID, frontmostPID: frontmostPID) {
+                completion(true)
+                return
+            }
+
+            guard Date() < timeoutAt else {
+                self.logger.warning("恢复目标应用超时，已取消模拟粘贴")
+                completion(false)
+                return
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03, execute: pollFrontmostApplication)
+        }
+
+        DispatchQueue.main.async {
+            let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            if Self.isTargetApplicationFrontmost(targetPID: targetPID, frontmostPID: frontmostPID) {
+                completion(true)
+                return
+            }
+
+            guard targetApplication.activate(options: []) else {
+                self.logger.warning("目标应用拒绝激活，已取消模拟粘贴")
+                completion(false)
+                return
+            }
+            pollFrontmostApplication()
         }
     }
     

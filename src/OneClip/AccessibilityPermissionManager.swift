@@ -69,9 +69,10 @@ class AccessibilityPermissionManager: ObservableObject {
     }
     
     /// 同步检查权限状态（仅在必要时使用）
-    func checkPermissionSync() -> Bool {
+    func checkPermissionSync(forceRefresh: Bool = false) -> Bool {
         // 如果缓存仍有效，直接返回缓存结果
-        if let cached = permissionCache,
+        if !forceRefresh,
+           let cached = permissionCache,
            Date().timeIntervalSince(lastCheckTime) < cacheValidDuration {
             return cached
         }

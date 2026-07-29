@@ -5,10 +5,121 @@
 //  Created by Wcowin on 2025/8/12.
 //
 
+import AppKit
 import Testing
 @testable import OneClip
 
 struct OneClipTests {
+
+    @Test func invalidClipboardWritePlanPreservesExistingClipboard() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLightTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("sentinel", forType: .string))
+
+        let result = ClipboardWritePlan(values: []).commit(to: pasteboard)
+
+        #expect(!result)
+        #expect(pasteboard.string(forType: .string) == "sentinel")
+    }
+
+    @Test func validTextClipboardWritePlanReportsSuccess() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLightTests.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        let result = ClipboardWritePlan(values: [
+            .string("PasteLight", .string)
+        ]).commit(to: pasteboard)
+
+        #expect(result)
+        #expect(pasteboard.string(forType: .string) == "PasteLight")
+    }
+
+    @Test func formattedPayloadLimitsEnforceBoundaries() {
+        #expect(ClipboardPayloadLimits.acceptsFormattedText(byteCount: 1))
+        #expect(ClipboardPayloadLimits.acceptsFormattedText(
+            byteCount: ClipboardPayloadLimits.maxFormattedTextBytes
+        ))
+        #expect(!ClipboardPayloadLimits.acceptsFormattedText(byteCount: 0))
+        #expect(!ClipboardPayloadLimits.acceptsFormattedText(
+            byteCount: ClipboardPayloadLimits.maxFormattedTextBytes + 1
+        ))
+        #expect(ClipboardPayloadLimits.acceptsStoredFormattedText(
+            byteCount: ClipboardPayloadLimits.maxStoredFormattedTextBytes
+        ))
+        #expect(!ClipboardPayloadLimits.acceptsStoredFormattedText(
+            byteCount: ClipboardPayloadLimits.maxStoredFormattedTextBytes + 1
+        ))
+    }
+
+    @Test func imagePayloadLimitsRejectOversizedAndOverflowingImages() {
+        #expect(ClipboardPayloadLimits.acceptsImage(
+            byteCount: 1,
+            pixelWidth: 8_000,
+            pixelHeight: 5_000
+        ))
+        #expect(!ClipboardPayloadLimits.acceptsImage(
+            byteCount: Int(ClipboardPayloadLimits.maxImageBytes + 1),
+            pixelWidth: 1,
+            pixelHeight: 1
+        ))
+        #expect(!ClipboardPayloadLimits.acceptsImage(
+            byteCount: 1,
+            pixelWidth: 8_001,
+            pixelHeight: 5_000
+        ))
+        #expect(!ClipboardPayloadLimits.acceptsImage(
+            byteCount: 1,
+            pixelWidth: Int64.max,
+            pixelHeight: 2
+        ))
+    }
+
+    @Test func imagePreviewDecoderCreatesMemoryBoundedThumbnail() throws {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 400,
+            pixelsHigh: 200,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let pngData = try #require(bitmap.representation(using: .png, properties: [:]))
+        let metadata = try #require(ImageThumbnailDecoder.metadata(from: pngData))
+
+        let thumbnail = try #require(ImageThumbnailDecoder.makeThumbnail(
+            from: pngData,
+            maxPixelSize: 64
+        ))
+        let maxDecodedDimension = thumbnail.representations
+            .flatMap { [$0.pixelsWide, $0.pixelsHigh] }
+            .max() ?? 0
+
+        #expect(metadata.pixelWidth == 400)
+        #expect(metadata.pixelHeight == 200)
+        #expect(maxDecodedDimension <= 64)
+        #expect(ImageThumbnailDecoder.estimatedMemoryCost(of: thumbnail) <= 64 * 64 * 4)
+    }
+
+    @Test func targetApplicationMustMatchFrontmostPID() {
+        #expect(WindowManager.isTargetApplicationFrontmost(targetPID: 42, frontmostPID: 42))
+        #expect(!WindowManager.isTargetApplicationFrontmost(targetPID: 42, frontmostPID: 43))
+        #expect(!WindowManager.isTargetApplicationFrontmost(targetPID: 42, frontmostPID: nil))
+    }
+
+    @Test func pasteRequestGateRejectsDuplicatesUntilFinished() {
+        let gate = PasteRequestGate()
+
+        #expect(gate.begin())
+        #expect(!gate.begin())
+        gate.finish()
+        #expect(gate.begin())
+        gate.finish()
+    }
 
     @Test func officeVMLRulesAreRemovedFromClipboardText() {
         let source = """
