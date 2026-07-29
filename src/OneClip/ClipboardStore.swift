@@ -8,6 +8,16 @@ class ClipboardStore: ObservableObject {
         let totalSize: Int64
         let cachePath: String
     }
+
+    struct SaveResult {
+        let item: ClipboardItem
+        let persisted: Bool
+    }
+
+    struct ClearResult {
+        let favoriteItems: [ClipboardItem]
+        let persisted: Bool
+    }
     
     private let fileManager = FileManager.default
     // 文件存储配置
@@ -71,6 +81,11 @@ class ClipboardStore: ObservableObject {
     
     @discardableResult
     func saveItem(_ item: ClipboardItem) -> ClipboardItem {
+        saveItemReportingStatus(item).item
+    }
+
+    @discardableResult
+    func saveItemReportingStatus(_ item: ClipboardItem) -> SaveResult {
         storeLock.lock()
         defer { storeLock.unlock() }
 
@@ -82,16 +97,216 @@ class ClipboardStore: ObservableObject {
             dateItems.removeAll { $0.id == item.id }
             dateItems.insert(processedItem, at: 0)
             try writeDateItemsUnsafe(dateItems, for: item.timestamp)
+            return SaveResult(item: processedItem, persisted: true)
         } catch {
             Logger.shared.error("保存项目索引失败: \(error.localizedDescription)")
+            return SaveResult(item: processedItem, persisted: false)
         }
-        return processedItem
     }
     
     func loadItems() -> [ClipboardItem] {
         storeLock.lock()
         defer { storeLock.unlock() }
         return loadItemsUnsafe()
+    }
+
+    /// Imports an already verified remote record without loading image payloads into memory.
+    /// The payload is copied into the existing date-based storage layout before the JSON
+    /// index is updated, so a partially downloaded item can never become visible.
+    @discardableResult
+    func importSyncedItem(
+        _ item: ClipboardItem,
+        payloadURL: URL?,
+        payloadKind: SyncPayloadKind?
+    ) throws -> ClipboardItem {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+
+        var importedItem = item
+        if let payloadURL, let payloadKind {
+            let dateDirectory = ensureDateDirectoryExists(for: item.timestamp)
+            let extensionName = payloadKind == .image ? "png" : "richtext"
+            let destinationURL = dateDirectory
+                .appendingPathComponent(item.id.uuidString)
+                .appendingPathExtension(extensionName)
+
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+            try fileManager.copyItem(at: payloadURL, to: destinationURL)
+            importedItem.filePath = destinationURL.path
+            importedItem.data = nil
+        } else if let existingItem = try loadDateItemsUnsafe(for: item.timestamp)
+            .first(where: { $0.id == item.id }) {
+            importedItem.filePath = existingItem.filePath
+            importedItem.data = nil
+        }
+
+        var dateItems = try loadDateItemsUnsafe(for: importedItem.timestamp)
+        dateItems.removeAll { $0.id == importedItem.id }
+        dateItems.insert(importedItem, at: 0)
+        try writeDateItemsUnsafe(dateItems, for: importedItem.timestamp)
+        return importedItem
+    }
+
+    /// Applies a verified remote batch under one store lock. All payloads and JSON
+    /// indexes are prepared before any index is published; index files are restored
+    /// if a later date write fails, keeping a failed batch out of visible history.
+    func applyRemoteSyncBatch(
+        imports: [(item: ClipboardItem, payloadURL: URL?, payloadKind: SyncPayloadKind?)],
+        deleting deletedItems: [ClipboardItem],
+        currentItems: [ClipboardItem]
+    ) throws -> [ClipboardItem] {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+
+        let transactionURL = storageDirectory
+            .appendingPathComponent(".webdav-import-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: transactionURL, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: transactionURL) }
+
+        let importedIDs = Set(imports.map { $0.item.id })
+        let deletedIDs = Set(deletedItems.map(\.id))
+        let existingByID = Dictionary(
+            currentItems.map { ($0.id, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        var affectedDates = Set(imports.map { dateFormatter.string(from: $0.item.timestamp) })
+        affectedDates.formUnion(deletedItems.map { dateFormatter.string(from: $0.timestamp) })
+        affectedDates.formUnion(currentItems.compactMap { item in
+            importedIDs.contains(item.id) ? dateFormatter.string(from: item.timestamp) : nil
+        })
+
+        struct OriginalIndex {
+            let data: Data?
+        }
+        var originalIndexes: [String: OriginalIndex] = [:]
+        var updatedIndexes: [String: [ClipboardItem]] = [:]
+        for dateString in affectedDates {
+            let indexURL = storageDirectory
+                .appendingPathComponent(dateString, isDirectory: true)
+                .appendingPathComponent("items.json")
+            let originalData = try? Data(contentsOf: indexURL)
+            originalIndexes[dateString] = OriginalIndex(data: originalData)
+            let items: [ClipboardItem]
+            if let originalData {
+                items = try JSONDecoder().decode([ClipboardItem].self, from: originalData)
+            } else {
+                items = []
+            }
+            updatedIndexes[dateString] = items.filter {
+                !deletedIDs.contains($0.id) && !importedIDs.contains($0.id)
+            }
+        }
+
+        struct PayloadReplacement {
+            let destination: URL
+            let backup: URL?
+            let wasCreated: Bool
+        }
+        var payloadReplacements: [PayloadReplacement] = []
+        var processedImports: [ClipboardItem] = []
+
+        do {
+            for (offset, importValue) in imports.enumerated() {
+                var importedItem = importValue.item
+                importedItem.data = nil
+
+                if let payloadURL = importValue.payloadURL,
+                   let payloadKind = importValue.payloadKind {
+                    let dateDirectory = ensureDateDirectoryExists(for: importedItem.timestamp)
+                    let extensionName = payloadKind == .image ? "png" : "richtext"
+                    let destinationURL = dateDirectory
+                        .appendingPathComponent(importedItem.id.uuidString)
+                        .appendingPathExtension(extensionName)
+                    let stagedURL = transactionURL
+                        .appendingPathComponent("payload-\(offset)")
+                        .appendingPathExtension(extensionName)
+                    try fileManager.copyItem(at: payloadURL, to: stagedURL)
+
+                    var backupURL: URL?
+                    let destinationExisted = fileManager.fileExists(atPath: destinationURL.path)
+                    if destinationExisted {
+                        let candidateBackup = transactionURL
+                            .appendingPathComponent("payload-backup-\(offset)")
+                            .appendingPathExtension(extensionName)
+                        try fileManager.copyItem(at: destinationURL, to: candidateBackup)
+                        backupURL = candidateBackup
+                        try fileManager.removeItem(at: destinationURL)
+                    }
+                    do {
+                        try fileManager.moveItem(at: stagedURL, to: destinationURL)
+                    } catch {
+                        if let backupURL {
+                            try? fileManager.copyItem(at: backupURL, to: destinationURL)
+                        }
+                        throw error
+                    }
+                    payloadReplacements.append(
+                        PayloadReplacement(
+                            destination: destinationURL,
+                            backup: backupURL,
+                            wasCreated: !destinationExisted
+                        )
+                    )
+                    importedItem.filePath = destinationURL.path
+                } else if let existingPath = existingByID[importedItem.id]?.filePath,
+                          fileManager.fileExists(atPath: existingPath) {
+                    importedItem.filePath = existingPath
+                }
+
+                let dateString = dateFormatter.string(from: importedItem.timestamp)
+                updatedIndexes[dateString, default: []].insert(importedItem, at: 0)
+                processedImports.append(importedItem)
+            }
+
+            // Encode every date first so encoding failure cannot partially publish a batch.
+            var encodedIndexes: [String: Data] = [:]
+            for (dateString, items) in updatedIndexes {
+                encodedIndexes[dateString] = try JSONEncoder().encode(items)
+            }
+            for (dateString, data) in encodedIndexes {
+                let directory = storageDirectory.appendingPathComponent(dateString, isDirectory: true)
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try data.write(to: directory.appendingPathComponent("items.json"), options: .atomic)
+            }
+        } catch {
+            for (dateString, originalIndex) in originalIndexes {
+                let indexURL = storageDirectory
+                    .appendingPathComponent(dateString, isDirectory: true)
+                    .appendingPathComponent("items.json")
+                if let originalData = originalIndex.data {
+                    try? fileManager.createDirectory(
+                        at: indexURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try? originalData.write(to: indexURL, options: .atomic)
+                } else {
+                    try? fileManager.removeItem(at: indexURL)
+                }
+            }
+            for replacement in payloadReplacements.reversed() {
+                if replacement.wasCreated {
+                    try? fileManager.removeItem(at: replacement.destination)
+                } else if let backup = replacement.backup {
+                    try? fileManager.removeItem(at: replacement.destination)
+                    try? fileManager.copyItem(at: backup, to: replacement.destination)
+                }
+            }
+            throw error
+        }
+
+        let retainedPaths = Set(
+            currentItems
+                .filter { !deletedIDs.contains($0.id) && !importedIDs.contains($0.id) }
+                .compactMap(\.filePath)
+                + processedImports.compactMap(\.filePath)
+        )
+        for deletedItem in deletedItems {
+            guard let filePath = deletedItem.filePath, !retainedPaths.contains(filePath) else { continue }
+            try? fileManager.removeItem(atPath: filePath)
+        }
+        return processedImports
     }
 
     /// 一次性持久化文本清洗结果，不触碰仍被历史项目引用的富文本或图片文件。
@@ -144,6 +359,13 @@ class ClipboardStore: ObservableObject {
     
     @discardableResult
     func clearAllItems(preserving additionalFavorites: [ClipboardItem] = []) -> [ClipboardItem] {
+        clearAllItemsReportingStatus(preserving: additionalFavorites).favoriteItems
+    }
+
+    @discardableResult
+    func clearAllItemsReportingStatus(
+        preserving additionalFavorites: [ClipboardItem] = []
+    ) -> ClearResult {
         storeLock.lock()
         defer { storeLock.unlock() }
         
@@ -161,14 +383,17 @@ class ClipboardStore: ObservableObject {
 
         // 收藏图片通常只保留 filePath。不能先删除日期目录再保存，否则收藏会指向
         // 已删除文件。先替换 JSON 索引，再只删除未被收藏引用的二进制文件。
-        replaceItemRecordsUnsafe(favoriteItems)
-        removeUnreferencedBinaryFilesUnsafe(retaining: favoriteItems)
+        let persisted = replaceItemRecordsUnsafe(favoriteItems)
+        if persisted {
+            removeUnreferencedBinaryFilesUnsafe(retaining: favoriteItems)
+        }
 
         Logger.shared.info("所有剪贴板项目已清空，保留了 \(favoriteItems.count) 个收藏项目")
-        return favoriteItems
+        return ClearResult(favoriteItems: favoriteItems, persisted: persisted)
     }
     
-    func deleteItem(_ item: ClipboardItem) {
+    @discardableResult
+    func deleteItem(_ item: ClipboardItem) -> Bool {
         storeLock.lock()
         defer { storeLock.unlock() }
 
@@ -176,10 +401,12 @@ class ClipboardStore: ObservableObject {
             var dateItems = try loadDateItemsUnsafe(for: item.timestamp)
             dateItems.removeAll { $0.id == item.id }
             try writeDateItemsUnsafe(dateItems, for: item.timestamp)
+            Logger.shared.info("项目已删除: \(item.id)")
+            return true
         } catch {
             Logger.shared.error("删除项目索引失败: \(error.localizedDescription)")
+            return false
         }
-        Logger.shared.info("项目已删除: \(item.id)")
     }
 
     /// 记录一次成功的使用，并持久化最近使用排序。使用 max 合并时间，避免异步写入乱序。
@@ -238,19 +465,22 @@ class ClipboardStore: ObservableObject {
         saveItemsUnsafe(items)
     }
     
-    private func saveItemsUnsafe(_ items: [ClipboardItem]) {
+    @discardableResult
+    private func saveItemsUnsafe(_ items: [ClipboardItem]) -> Bool {
         // 按日期分组保存项目
         let groupedItems = Dictionary(grouping: items) { item in
             dateFormatter.string(from: item.timestamp)
         }
-        
+        var succeeded = true
         for (dateString, dateItems) in groupedItems {
             do {
                 try writeDateItemsUnsafe(dateItems, dateString: dateString)
             } catch {
+                succeeded = false
                 Logger.shared.error("保存日期项目失败 \(dateString): \(error.localizedDescription)")
             }
         }
+        return succeeded
     }
 
     private func loadDateItemsUnsafe(for date: Date) throws -> [ClipboardItem] {
@@ -276,11 +506,13 @@ class ClipboardStore: ObservableObject {
         try data.write(to: itemsFile, options: .atomic)
     }
 
-    private func replaceItemRecordsUnsafe(_ items: [ClipboardItem]) {
+    @discardableResult
+    private func replaceItemRecordsUnsafe(_ items: [ClipboardItem]) -> Bool {
         let retainedDateDirectories = Set(items.map { dateFormatter.string(from: $0.timestamp) })
 
         // 先覆盖仍然存在的日期记录，避免迁移中途失败时先删掉可恢复的索引。
-        saveItemsUnsafe(items)
+        var succeeded = saveItemsUnsafe(items)
+        guard succeeded else { return false }
 
         do {
             let dateDirectories = try fileManager.contentsOfDirectory(
@@ -300,8 +532,10 @@ class ClipboardStore: ObservableObject {
                 }
             }
         } catch {
+            succeeded = false
             Logger.shared.error("清理空日期的历史索引失败: \(error.localizedDescription)")
         }
+        return succeeded
     }
 
     private func removeUnreferencedBinaryFilesUnsafe(retaining items: [ClipboardItem]) {

@@ -3351,15 +3351,10 @@ struct SettingsView: View {
                     ) { selectedTab = 4 }
                     
                     ModernSidebarButton(
-                        title: "高级功能",
-                        icon: "slider.horizontal.2.square",
+                        title: "同步与备份",
+                        icon: "arrow.triangle.2.circlepath.icloud",
                         isSelected: selectedTab == 5
-                    ) { 
-                        // 高级功能暂时禁用
-                        // selectedTab = 5 
-                    }
-                    .disabled(true)
-                    .opacity(0.4)
+                    ) { selectedTab = 5 }
                     
                     ModernSidebarButton(
                         title: "关于",
@@ -3551,7 +3546,7 @@ struct SettingsView: View {
         case 2: return "性能优化"
         case 3: return "存储管理"
         case 4: return "快捷键配置"
-        case 5: return "高级选项"
+        case 5: return "同步与备份"
         case 6: return "关于 PasteLight"
         default: return "设置"
         }
@@ -3977,48 +3972,10 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
         }
     }
     
-    // 高级设置
+    // WebDAV 同步与备份（一级页面，不进入二级菜单）
     @ViewBuilder
     private func advancedSettingsView() -> some View {
-        VStack(spacing: 30) {
-            Spacer()
-            
-            // 高级功能暂时禁用提示
-            VStack(spacing: 20) {
-                Image(systemName: "lock.circle.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.orange)
-                
-                VStack(spacing: 12) {
-                    Text("高级功能即将推出")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-                    
-                    Text("高级功能正在开发中，将在后续版本中提供")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    
-                    Text("敬请期待更多强大功能！")
-                        .font(.callout)
-                        .foregroundColor(.orange)
-                        .fontWeight(.medium)
-                }
-            }
-            .padding(40)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                    )
-            )
-            
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        WebDAVSettingsView()
     }
     
     // 存储管理页面

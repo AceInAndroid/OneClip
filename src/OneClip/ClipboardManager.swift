@@ -1416,7 +1416,8 @@ class ClipboardManager: ObservableObject {
         // 异步保存到持久化存储，避免阻塞UI
         Task.detached(priority: .background) { [weak self, item] in
             guard let self else { return }
-            let storedItem = self.store.saveItem(item)
+            let saveResult = self.store.saveItemReportingStatus(item)
+            let storedItem = saveResult.item
 
             // 图片成功落盘后释放列表中的大块 Data；预览和粘贴按 filePath 按需加载。
             DispatchQueue.main.async { [weak self] in
@@ -1428,6 +1429,12 @@ class ClipboardManager: ObservableObject {
                 self.clipboardItems[index].filePath = storedItem.filePath
                 self.clipboardItems[index].fingerprint = storedItem.fingerprint
                 self.updateFilteredItems()
+                if saveResult.persisted {
+                    NotificationCenter.default.post(
+                        name: .clipboardSyncMutation,
+                        object: ClipboardSyncMutationEvent(.upsert(storedItem))
+                    )
+                }
             }
         }
         
@@ -1838,6 +1845,10 @@ class ClipboardManager: ObservableObject {
         
         if let index = clipboardItems.firstIndex(where: { $0.id == item.id }) {
             let itemToDelete = clipboardItems[index]
+            guard store.deleteItem(itemToDelete) else {
+                logger.error("项目删除未落盘，已保留本机历史: \(itemToDelete.id)")
+                return
+            }
             
             // 如果是图片类型，从缓存中移除
             if itemToDelete.type == .image {
@@ -1846,7 +1857,10 @@ class ClipboardManager: ObservableObject {
             
             clipboardItems.remove(at: index)
             rebuildFingerprintIndex()
-            store.deleteItem(itemToDelete)
+            NotificationCenter.default.post(
+                name: .clipboardSyncMutation,
+                object: ClipboardSyncMutationEvent(.delete(itemToDelete.id))
+            )
             logger.info("项目已删除: \(itemToDelete.content.prefix(30))")
             updateFilteredItems()
             
@@ -1858,20 +1872,36 @@ class ClipboardManager: ObservableObject {
     }
     
     func clearAllItems() {
+        let manuallyDeletedIDs = clipboardItems
+            .filter { !FavoriteManager.shared.isFavorite($0) }
+            .map(\.id)
+
         // 1. 获取所有收藏项目（从FavoriteManager获取，确保数据一致性）
         let favoriteItems = ClipboardHistoryDeduplicator.deduplicate(
             FavoriteManager.shared.getAllFavorites()
         )
         
-        // 2. 清理非收藏项目的图片缓存
+        // 2. 先清空持久化存储；失败时不更新内存，也不传播跨设备墓碑。
+        let clearResult = store.clearAllItemsReportingStatus(preserving: favoriteItems)
+        guard clearResult.persisted else {
+            logger.error("清空历史未完整落盘，已取消同步删除传播")
+            return
+        }
+        let storedFavoriteItems = clearResult.favoriteItems
+
+        // 3. 清理非收藏项目的图片缓存
         for item in clipboardItems {
             if !FavoriteManager.shared.isFavorite(item) && item.type == .image {
                 ImageCacheManager.shared.removeImage(forKey: item.id.uuidString)
             }
         }
-        
-        // 3. 清空存储
-        let storedFavoriteItems = store.clearAllItems(preserving: favoriteItems)
+
+        if !manuallyDeletedIDs.isEmpty {
+            NotificationCenter.default.post(
+                name: .clipboardSyncMutation,
+                object: ClipboardSyncMutationEvent(.clear(manuallyDeletedIDs))
+            )
+        }
         
         // 4. 更新ClipboardManager的内存列表，包含所有收藏项目
         clipboardItems = storedFavoriteItems
@@ -1893,6 +1923,42 @@ class ClipboardManager: ObservableObject {
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: NSNotification.Name("ClipboardItemsChanged"), object: nil)
         }
+    }
+
+    /// Applies fully downloaded and verified remote records to the in-memory list.
+    /// Persistence is completed by the sync coordinator before this method is called.
+    /// No pasteboard write or local sync mutation is emitted, preventing feedback loops.
+    func applyRemoteSyncBatchToMemory(
+        importedItems: [ClipboardItem],
+        deletedIDs: Set<UUID>
+    ) {
+        precondition(Thread.isMainThread)
+
+        if !deletedIDs.isEmpty {
+            for item in clipboardItems where deletedIDs.contains(item.id) && item.type == .image {
+                ImageCacheManager.shared.removeImage(forKey: item.id.uuidString)
+            }
+            clipboardItems.removeAll { deletedIDs.contains($0.id) }
+        }
+
+        for item in importedItems {
+            if let index = clipboardItems.firstIndex(where: { $0.id == item.id }) {
+                clipboardItems[index] = item
+            } else {
+                clipboardItems.append(item)
+            }
+        }
+
+        clipboardItems.sort { $0.sortTimestamp > $1.sortTimestamp }
+        clipboardItems = ClipboardHistoryDeduplicator.deduplicate(clipboardItems)
+        rebuildFingerprintIndex()
+        updateFilteredItems()
+        FavoriteManager.shared.syncWithClipboardStore()
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ClipboardItemsChanged"),
+            object: nil
+        )
     }
 
     func applyHistoryRetention() {

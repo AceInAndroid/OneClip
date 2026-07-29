@@ -30,6 +30,11 @@
 		AA00005129A8B5000123456 /* UserActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005029A8B5000123456 /* UserActivityMonitor.swift */; };
 		AA00005329A8B5000123456 /* ClipboardItemRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005229A8B5000123456 /* ClipboardItemRowView.swift */; };
 		AA00005529A8B5000123456 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005429A8B5000123456 /* AboutView.swift */; };
+		AA00005729A8B5000123456 /* WebDAVModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005629A8B5000123456 /* WebDAVModels.swift */; };
+		AA00005929A8B5000123456 /* WebDAVSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005829A8B5000123456 /* WebDAVSecurity.swift */; };
+		AA00005B29A8B5000123456 /* WebDAVClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005A29A8B5000123456 /* WebDAVClient.swift */; };
+		AA00005D29A8B5000123456 /* WebDAVSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005C29A8B5000123456 /* WebDAVSyncCoordinator.swift */; };
+		AA00005F29A8B5000123456 /* WebDAVSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00005E29A8B5000123456 /* WebDAVSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +73,11 @@
 		AA00005029A8B5000123456 /* UserActivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserActivityMonitor.swift; sourceTree = "<group>"; };
 		AA00005229A8B5000123456 /* ClipboardItemRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardItemRowView.swift; sourceTree = "<group>"; };
 		AA00005429A8B5000123456 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		AA00005629A8B5000123456 /* WebDAVModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVModels.swift; sourceTree = "<group>"; };
+		AA00005829A8B5000123456 /* WebDAVSecurity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVSecurity.swift; sourceTree = "<group>"; };
+		AA00005A29A8B5000123456 /* WebDAVClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVClient.swift; sourceTree = "<group>"; };
+		AA00005C29A8B5000123456 /* WebDAVSyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVSyncCoordinator.swift; sourceTree = "<group>"; };
+		AA00005E29A8B5000123456 /* WebDAVSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAVSettingsView.swift; sourceTree = "<group>"; };
 		AA00004829A8B5000123456 /* OneClip.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OneClip.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -117,6 +127,11 @@
 				AA00001029A8B4D200123456 /* ClipboardManager.swift */,
 				AA00001229A8B4E500123456 /* ClipboardItem.swift */,
 				AA00001429A8B4F800123456 /* ClipboardStore.swift */,
+				AA00005629A8B5000123456 /* WebDAVModels.swift */,
+				AA00005829A8B5000123456 /* WebDAVSecurity.swift */,
+				AA00005A29A8B5000123456 /* WebDAVClient.swift */,
+				AA00005C29A8B5000123456 /* WebDAVSyncCoordinator.swift */,
+				AA00005E29A8B5000123456 /* WebDAVSettingsView.swift */,
 				AA00001629A8B5000123456 /* SettingsManager.swift */,
 				AA00001829A8B5000123456 /* Logger.swift */,
 				AA00002029A8B5000123456 /* ClipboardError.swift */,
@@ -258,6 +273,11 @@
 				AA00001129A8B4D200123456 /* ClipboardManager.swift in Sources */,
 				AA00001329A8B4E500123456 /* ClipboardItem.swift in Sources */,
 				AA00001529A8B4F800123456 /* ClipboardStore.swift in Sources */,
+				AA00005729A8B5000123456 /* WebDAVModels.swift in Sources */,
+				AA00005929A8B5000123456 /* WebDAVSecurity.swift in Sources */,
+				AA00005B29A8B5000123456 /* WebDAVClient.swift in Sources */,
+				AA00005D29A8B5000123456 /* WebDAVSyncCoordinator.swift in Sources */,
+				AA00005F29A8B5000123456 /* WebDAVSettingsView.swift in Sources */,
 				AA00001729A8B5000123456 /* SettingsManager.swift in Sources */,
 				AA00001929A8B5000123456 /* Logger.swift in Sources */,
 				AA00002129A8B5000123456 /* ClipboardError.swift in Sources */,

@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-enum ClipboardItemType: String, Codable, CaseIterable {
+enum ClipboardItemType: String, Codable, CaseIterable, Hashable {
     case text = "text"
     case image = "image"
     case file = "file"

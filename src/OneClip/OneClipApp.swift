@@ -78,6 +78,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 监听剪贴板变化以更新菜单
         setupClipboardMonitoring()
+
+        // 恢复 WebDAV 加密备份/同步；远端内容仅进入历史，不写系统剪贴板。
+        WebDAVSyncManager.shared.start()
         
         // 立即设置全局快捷键
         setupGlobalHotkey()
@@ -279,6 +282,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        WebDAVSyncManager.shared.stop()
         SettingsManager.shared.flushPendingSave()
     }
     

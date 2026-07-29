@@ -130,6 +130,7 @@ struct AppSettings: Codable {
     var globalShortcutKeyCode: UInt16?
     var globalShortcutModifierFlags: UInt?
     var clipboardPresentationMode: String?
+    var webDAVConfiguration: WebDAVConfiguration?
     
     init() {
         showInDock = false
@@ -154,6 +155,7 @@ struct AppSettings: Codable {
         globalShortcutKeyCode = GlobalShortcut.defaultKeyCode
         globalShortcutModifierFlags = GlobalShortcut.defaultModifierFlags
         clipboardPresentationMode = ClipboardPresentationMode.bottomShelf.rawValue
+        webDAVConfiguration = WebDAVConfiguration()
     }
 }
 
@@ -333,6 +335,18 @@ class SettingsManager: ObservableObject {
         }
     }
 
+    /// Only non-sensitive WebDAV settings are persisted. Login passwords and the
+    /// derived encryption key are stored separately in the macOS Keychain.
+    @Published var webDAVConfiguration: WebDAVConfiguration = WebDAVConfiguration() {
+        didSet {
+            saveSettings()
+            NotificationCenter.default.post(
+                name: .webDAVConfigurationDidChange,
+                object: webDAVConfiguration
+            )
+        }
+    }
+
     var globalShortcut: GlobalShortcut {
         GlobalShortcut(keyCode: globalShortcutKeyCode, modifierFlags: globalShortcutModifierFlags)
     }
@@ -387,9 +401,13 @@ class SettingsManager: ObservableObject {
     }
     
     /// 重置到默认设置
+    @MainActor
     func resetToDefaults() {
         logger.info("Resetting settings to defaults")
         AccessibilityPermissionManager.shared.setPromptSuppressed(false)
+        if webDAVConfiguration.mode != .disabled {
+            WebDAVSyncManager.shared.disconnect()
+        }
         let defaults = AppSettings()
         DispatchQueue.main.async {
             self.showInDock = defaults.showInDock
@@ -416,6 +434,7 @@ class SettingsManager: ObservableObject {
             self.clipboardPresentationMode = ClipboardPresentationMode(
                 rawValue: defaults.clipboardPresentationMode ?? ""
             ) ?? .bottomShelf
+            self.webDAVConfiguration = defaults.webDAVConfiguration ?? WebDAVConfiguration()
             
             self.applyTheme()
         }
@@ -490,6 +509,7 @@ class SettingsManager: ObservableObject {
                 self.clipboardPresentationMode = ClipboardPresentationMode(
                     rawValue: settings.clipboardPresentationMode ?? ""
                 ) ?? .bottomShelf
+                self.webDAVConfiguration = settings.webDAVConfiguration ?? WebDAVConfiguration()
                 
                 self.applyTheme()
             }
@@ -564,6 +584,7 @@ class SettingsManager: ObservableObject {
                 self.clipboardPresentationMode = ClipboardPresentationMode(
                     rawValue: settings.clipboardPresentationMode ?? ""
                 ) ?? .bottomShelf
+                self.webDAVConfiguration = settings.webDAVConfiguration ?? WebDAVConfiguration()
             }
             
             applyTheme()
@@ -607,6 +628,7 @@ class SettingsManager: ObservableObject {
         settings.globalShortcutKeyCode = globalShortcutKeyCode
         settings.globalShortcutModifierFlags = globalShortcutModifierFlags
         settings.clipboardPresentationMode = clipboardPresentationMode.rawValue
+        settings.webDAVConfiguration = webDAVConfiguration
         
         do {
             let data = try JSONEncoder().encode(settings)

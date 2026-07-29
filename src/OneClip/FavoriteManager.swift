@@ -132,7 +132,13 @@ class FavoriteManager: ObservableObject {
             clipboardManager.clipboardItems[index] = updatedItem
             
             // 保存更新后的项目到存储
-            clipboardManager.store.saveItem(updatedItem)
+            let saveResult = clipboardManager.store.saveItemReportingStatus(updatedItem)
+            if saveResult.persisted {
+                NotificationCenter.default.post(
+                    name: .clipboardSyncMutation,
+                    object: ClipboardSyncMutationEvent(.upsert(saveResult.item))
+                )
+            }
             
             Logger.shared.info("同步更新ClipboardManager中的项目收藏状态: \(isFavorite)")
         }
