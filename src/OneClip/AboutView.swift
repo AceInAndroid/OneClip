@@ -9,7 +9,7 @@ enum PasteLightAboutInfo {
     static let emailURL = URL(string: "mailto:2577113@qq.com")!
 
     static var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2"
     }
 
     static var build: String {

@@ -221,44 +221,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return
         }
         
-        // 设置状态栏按钮图像
-        
-        // 优化的系统图标选择 - 使用最新的 SF Symbols
+        // 优先复用应用图标，确保菜单栏与 PasteLight 品牌视觉一致。
         var iconImage: NSImage?
-        
-        // 按优先级尝试更现代的 SF Symbols 图标
-        let iconNames = [
-            "clipboard",                    // 主要剪贴板图标
-            "doc.on.clipboard",             // 文档剪贴板
-            "list.clipboard",               // 列表剪贴板  
-            "clipboard.fill",               // 填充剪贴板
-            "square.stack.3d.up",           // 堆叠立体
-            "square.stack",                 // 堆叠方块
-            "tray.2",                       // 双层托盘
-            "archivebox",                   // 存档盒
-            "folder.badge.plus"             // 文件夹加号
-        ]
-        
-        // 按顺序尝试图标
-        for iconName in iconNames {
-            if let image = NSImage(systemSymbolName: iconName, accessibilityDescription: "PasteLight") {
-                iconImage = image
-                logDebug("使用系统状态栏图标: \(iconName)")
-                break
-            }
+
+        if let applicationIcon = NSApp.applicationIconImage.copy() as? NSImage {
+            applicationIcon.size = NSSize(width: 18, height: 18)
+            applicationIcon.isTemplate = false
+            iconImage = applicationIcon
+            logDebug("使用 PasteLight 应用图标作为状态栏图标")
+        } else if let fallbackIcon = NSImage(
+            systemSymbolName: "clipboard",
+            accessibilityDescription: "PasteLight"
+        ) {
+            fallbackIcon.isTemplate = true
+            iconImage = fallbackIcon
+            logDebug("应用图标不可用，使用系统状态栏图标")
         }
         
         if let iconImage = iconImage {
-            // 配置系统图标
             button.image = iconImage
-            button.image?.isTemplate = true
-            logDebug("系统图标配置完成")
         } else {
-            // 使用优化的自定义图标
-            logDebug("系统图标不可用，使用优化的自定义图标")
+            logDebug("应用图标与系统图标不可用，使用自定义状态栏图标")
             let customIcon = createCustomIcon()
             button.image = customIcon
-            button.image?.isTemplate = true
         }
         
         // 最后的备选方案 - 使用简单文本
@@ -267,10 +252,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             logDebug("使用文本图标作为最后备选方案")
         }
         
-        // 确保图标大小合适
+        // 菜单栏图标使用 18pt，并保持原始宽高比。
         if let image = button.image {
-            image.size = NSSize(width: 16, height: 16)
+            image.size = NSSize(width: 18, height: 18)
         }
+        button.imageScaling = .scaleProportionallyDown
         
         // 确保按钮其他属性设置正确
         button.title = button.image != nil ? "" : button.title
