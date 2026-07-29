@@ -13,7 +13,7 @@
   <a href="https://github.com/AceInAndroid/OneClip/releases/latest"><img src="https://img.shields.io/github/v/release/AceInAndroid/OneClip?style=flat-square&color=5E6AD2" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-111827?style=flat-square&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/SwiftUI-Native-F05138?style=flat-square&logo=swift&logoColor=white" alt="Native SwiftUI">
-  <img src="https://img.shields.io/badge/Data-Local-22C55E?style=flat-square" alt="Local Data">
+  <img src="https://img.shields.io/badge/WebDAV-E2EE-22C55E?style=flat-square" alt="WebDAV E2EE">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-F59E0B?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -24,7 +24,7 @@ PasteLight 不想成为一个常驻屏幕的复杂工作台。它安静地待在
 - **轻量呈现**：默认从屏幕底部弹出横向历史栏，用完即隐藏；也可切换为经典窗口。
 - **轻量交互**：单击选择，双击直接粘贴；方向键移动焦点，回车复制所选项。
 - **轻量搜索**：无需先点搜索框，直接输入即可搜索；也支持 `⌘F`。
-- **轻量存储**：数据保存在本机，重复内容自动合并，历史可按天自动清理。
+- **轻量存储**：默认仅保存在本机，重复内容自动合并，历史可按天清理；需要时可启用加密 WebDAV 同步。
 - **轻量技术栈**：使用 Swift、SwiftUI 与 macOS 原生框架构建，没有网页运行时。
 
 ## 核心能力
@@ -50,6 +50,25 @@ PasteLight 不想成为一个常驻屏幕的复杂工作台。它安静地待在
 - 可选保留 `7 / 14 / 30 / 60 / 180 / 365` 天或永久保留，默认 60 天。
 - 收藏内容不会被自动清理。
 - 复制、粘贴、收藏、搜索和删除集中在原生右键菜单中。
+
+### WebDAV 加密同步与备份
+
+- 功能默认关闭，可在“设置 → 同步与备份”中选择**加密备份**或**双向同步**。
+- 支持在多台 Mac 的 PasteLight 之间同步纯文本、富文本和图片；文件、音视频、压缩包和应用程序始终只保留在本机。
+- 清单和附件使用 AES-GCM 端到端加密，同步密码通过 PBKDF2-HMAC-SHA256（至少 600,000 次迭代）派生；WebDAV 密码与派生密钥分别保存在 macOS Keychain。
+- 双向同步会合并新增内容、收藏和手动删除；自动到期只清理本机，不会删除其他设备上的记录。
+- 远端内容只加入历史记录，不会覆盖当前系统剪贴板；相同内容会按指纹自动去重。
+- 加密备份每日最多自动执行一次，也可手动触发；每台设备保留最近 7 个成功快照，恢复时与本机历史安全合并。
+- 图片同步上限为 20 MB，富文本上限为 8 MB；超限项目保留在本机并计入跳过数量。
+
+#### 开始使用
+
+1. 准备一个具有有效系统信任证书的 HTTPS WebDAV 地址。
+2. 在“同步与备份”中填写服务器、远端目录、用户名和 WebDAV 密码。
+3. 设置至少 12 个字符的同步密码；其他 Mac 必须输入完全相同的同步密码。
+4. 先运行“测试连接”，再选择模式并确认预计上传条数与体积。
+
+> PasteLight 不允许 HTTP 连接，也不会绕过无效或自签名证书。NAS 使用自建 CA 时，请先将 CA 正确加入 macOS 系统信任。
 
 ### 两种界面
 
@@ -81,9 +100,12 @@ PasteLight 只有在执行“直接粘贴到当前光标位置”时才需要辅
 
 ## 数据与隐私
 
-- 剪贴板历史保存在本机，不会上传到云端。
+- 同步与备份默认关闭；未启用时，剪贴板历史只保存在本机。
+- 启用 WebDAV 后，只向你配置的服务器上传端到端加密的清单、备份和受支持附件；服务器无法直接读取剪贴板明文。
+- WebDAV 登录密码和派生密钥保存在 macOS Keychain，不会写入 `settings.json`，也不会通过 iCloud Keychain 同步。
+- 断开或重置只删除本机配置和 Keychain 项，不会自动删除服务器上的加密数据。
 - 图片和大文件按需读取，减少常驻内存占用。
-- 内容指纹用于本地去重，不会离开设备。
+- 内容指纹用于本地及加密同步去重；远端对象使用带密钥的哈希标识，不暴露原始内容指纹。
 - 改名后仍沿用原有 Bundle ID 和数据目录，现有用户的历史记录与设置可以继续使用。
 
 ## 从源码构建
