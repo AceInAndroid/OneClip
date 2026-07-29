@@ -95,6 +95,27 @@ enum ClipboardTextSanitizer {
     }
 }
 
+enum ClipboardItemDateCodec {
+    private static let lock = NSLock()
+    private static let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static func date(from string: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.date(from: string)
+    }
+
+    static func string(from date: Date) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.string(from: date)
+    }
+}
+
 struct ClipboardItem: Identifiable, Codable, Equatable {
     let id: UUID
     let content: String
@@ -142,10 +163,7 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         
         // 处理 Date 的 JSON 序列化
         if let dateString = try? container.decode(String.self, forKey: .timestamp) {
-            // 如果是字符串格式，尝试解析
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            timestamp = formatter.date(from: dateString) ?? Date()
+            timestamp = ClipboardItemDateCodec.date(from: dateString) ?? Date()
         } else if let timeInterval = try? container.decode(Double.self, forKey: .timestamp) {
             // 如果是时间戳格式
             timestamp = Date(timeIntervalSince1970: timeInterval)
@@ -160,9 +178,7 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         fingerprint = try container.decodeIfPresent(String.self, forKey: .fingerprint)
 
         if let dateString = try? container.decode(String.self, forKey: .lastUsedAt) {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            lastUsedAt = formatter.date(from: dateString)
+            lastUsedAt = ClipboardItemDateCodec.date(from: dateString)
         } else if let timeInterval = try? container.decode(Double.self, forKey: .lastUsedAt) {
             lastUsedAt = Date(timeIntervalSince1970: timeInterval)
         } else {
@@ -176,18 +192,14 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
         try container.encode(content, forKey: .content)
         try container.encode(type, forKey: .type)
         
-        // 将 Date 转换为 ISO8601 字符串格式
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let dateString = formatter.string(from: timestamp)
-        try container.encode(dateString, forKey: .timestamp)
+        try container.encode(ClipboardItemDateCodec.string(from: timestamp), forKey: .timestamp)
         
         try container.encode(data, forKey: .data)
         try container.encodeIfPresent(filePath, forKey: .filePath)
         try container.encode(isFavorite, forKey: .isFavorite)
         try container.encodeIfPresent(fingerprint, forKey: .fingerprint)
         if let lastUsedAt {
-            try container.encode(formatter.string(from: lastUsedAt), forKey: .lastUsedAt)
+            try container.encode(ClipboardItemDateCodec.string(from: lastUsedAt), forKey: .lastUsedAt)
         }
     }
 }

@@ -34,6 +34,67 @@ enum ClipboardPayloadLimits {
     }
 }
 
+protocol ClipboardImageDataProviding: AnyObject {
+    var types: [NSPasteboard.PasteboardType]? { get }
+    func data(forType type: NSPasteboard.PasteboardType) -> Data?
+}
+
+extension NSPasteboard: ClipboardImageDataProviding {}
+
+struct ClipboardImagePayload {
+    let data: Data
+    let type: NSPasteboard.PasteboardType
+    let formatName: String
+}
+
+enum ClipboardImagePayloadReader {
+    private static let preferredFormats: [(NSPasteboard.PasteboardType, String)] = [
+        (.png, "PNG"),
+        (.tiff, "TIFF"),
+        (NSPasteboard.PasteboardType("public.png"), "PNG"),
+        (NSPasteboard.PasteboardType("public.jpeg"), "JPEG"),
+        (NSPasteboard.PasteboardType("image/png"), "PNG"),
+        (NSPasteboard.PasteboardType("image/jpeg"), "JPEG"),
+        (NSPasteboard.PasteboardType("public.heic"), "HEIC"),
+        (NSPasteboard.PasteboardType("public.heif"), "HEIF"),
+        (NSPasteboard.PasteboardType("public.webp"), "WebP"),
+        (NSPasteboard.PasteboardType("public.gif"), "GIF"),
+        (NSPasteboard.PasteboardType("image/gif"), "GIF"),
+        (NSPasteboard.PasteboardType("public.svg-image"), "SVG"),
+        (.pdf, "PDF"),
+        (NSPasteboard.PasteboardType("public.image"), "通用图片")
+    ]
+
+    static func read(from provider: ClipboardImageDataProviding) -> ClipboardImagePayload? {
+        let declaredTypes = provider.types ?? []
+        let declaredTypeSet = Set(declaredTypes)
+
+        if let preferred = preferredFormats.first(where: { declaredTypeSet.contains($0.0) }) {
+            guard let data = provider.data(forType: preferred.0), data.count > 20 else {
+                return nil
+            }
+            return ClipboardImagePayload(data: data, type: preferred.0, formatName: preferred.1)
+        }
+
+        guard let customType = declaredTypes.first(where: { type in
+            let value = type.rawValue.lowercased()
+            return (value.contains("image") || value.contains("photo"))
+                && !value.contains("url")
+                && !value.contains("path")
+        }),
+        let data = provider.data(forType: customType),
+        data.count > 20 else {
+            return nil
+        }
+
+        return ClipboardImagePayload(
+            data: data,
+            type: customType,
+            formatName: "自定义(\(customType.rawValue))"
+        )
+    }
+}
+
 enum ClipboardWriteValue {
     case string(String, NSPasteboard.PasteboardType)
     case data(Data, NSPasteboard.PasteboardType)
@@ -531,20 +592,6 @@ class ClipboardManager: ObservableObject {
             return
         }
         
-        // 快速去重检查：避免浏览器复制等场景的重复内容
-        let currentHash = calculateQuickContentHash(pasteboard)
-        let currentTime = Date()
-        
-        if currentHash == lastContentHash && 
-           currentTime.timeIntervalSince(lastContentTime) < duplicateTimeWindow {
-            logger.debug("检测到重复内容，跳过处理（哈希: \(String(currentHash.prefix(8)))）")
-            return
-        }
-        
-        // 更新去重信息
-        lastContentHash = currentHash
-        lastContentTime = currentTime
-        
         // 重新设计的检测逻辑：智能区分访达文件复制和直接图片复制
         
         // 1. 首先检查是否有本地文件URL（访达复制文件的情况）
@@ -591,6 +638,18 @@ class ClipboardManager: ObservableObject {
             handleImageContentSync(pasteboard)
             return
         }
+
+        // 快速去重仅用于文本。图片和文件由完整内容指纹去重，
+        // 避免为快速哈希额外读取一次大块二进制。
+        let currentHash = calculateQuickContentHash(pasteboard)
+        let currentTime = Date()
+        if currentHash == lastContentHash,
+           currentTime.timeIntervalSince(lastContentTime) < duplicateTimeWindow {
+            logger.debug("检测到重复文本，跳过处理（哈希: \(String(currentHash.prefix(8)))）")
+            return
+        }
+        lastContentHash = currentHash
+        lastContentTime = currentTime
         
         // 3. 列表使用系统提供的纯文本。Excel 表格的制表符和换行会保留，
         // RTF/HTML 作为默认粘贴时恢复格式的隐藏数据保存，不参与列表展示。
@@ -638,12 +697,9 @@ class ClipboardManager: ObservableObject {
                 let typeString = type.rawValue.lowercased()
                 // 检查是否有我们可能错过的图片类型
                 if typeString.contains("image") && !typeString.contains("url") && !typeString.contains("path") {
-                    if let data = pasteboard.data(forType: type), data.count > 50 {
-                        logger.debug("发现可能的图片类型: \(type.rawValue)")
-                        // 重新尝试图片处理
-                        handleImageContentSync(pasteboard)
-                        return
-                    }
+                    logger.debug("发现可能的图片类型: \(type.rawValue)")
+                    handleImageContentSync(pasteboard)
+                    return
                 }
             }
         }
@@ -1037,70 +1093,14 @@ class ClipboardManager: ObservableObject {
     
     private func handleImageContentSync(_ pasteboard: NSPasteboard) {
         logger.info("开始处理图片内容")
-        
-        // 简化的图片格式检测，重点解决预览问题
-        var imageData: Data?
-        var detectedFormat = ""
-        
-        // 按照兼容性优先级尝试不同格式
-        let formats: [(NSPasteboard.PasteboardType, String)] = [
-            // 标准格式 - 最高兼容性
-            (.png, "PNG"),
-            (.tiff, "TIFF"),
-            (NSPasteboard.PasteboardType("public.png"), "PNG"),
-            (NSPasteboard.PasteboardType("public.jpeg"), "JPEG"),
-            (NSPasteboard.PasteboardType("image/png"), "PNG"),
-            (NSPasteboard.PasteboardType("image/jpeg"), "JPEG"),
-            
-            // 现代格式
-            (NSPasteboard.PasteboardType("public.heic"), "HEIC"),
-            (NSPasteboard.PasteboardType("public.heif"), "HEIF"),
-            (NSPasteboard.PasteboardType("public.webp"), "WebP"),
-            
-            // 其他格式
-            (NSPasteboard.PasteboardType("public.gif"), "GIF"),
-            (NSPasteboard.PasteboardType("image/gif"), "GIF"),
-            (NSPasteboard.PasteboardType("public.svg-image"), "SVG"),
-            (.pdf, "PDF"),
-            (NSPasteboard.PasteboardType("public.image"), "通用图片")
-        ]
-        
-        // 尝试获取图片数据
-        for (pasteboardType, formatName) in formats {
-            if let data = pasteboard.data(forType: pasteboardType), data.count > 20 {
-                imageData = data
-                detectedFormat = formatName
-                logger.info("成功获取 \(formatName) 格式图片: \(data.count) 字节")
-                
-                // 输出数据头部用于调试
-                let headerBytes = data.prefix(16)
-                let hexString = headerBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-                logger.debug("� 数据头部: \(hexString)")
-                break
-            }
-        }
-        
-        // 如果标准格式都没找到，扫描所有包含 "image" 的类型
-        if imageData == nil, let types = pasteboard.types {
-            logger.debug("扫描自定义图片格式...")
-            for type in types {
-                let typeString = type.rawValue.lowercased()
-                if (typeString.contains("image") || typeString.contains("photo")) &&
-                   !typeString.contains("url") && !typeString.contains("path") {
-                    if let data = pasteboard.data(forType: type), data.count > 20 {
-                        imageData = data
-                        detectedFormat = "自定义(\(type.rawValue))"
-                        logger.info("找到自定义图片格式: \(type.rawValue), 大小: \(data.count) 字节")
-                        break
-                    }
-                }
-            }
-        }
-        
-        guard let data = imageData else {
+
+        guard let payload = ClipboardImagePayloadReader.read(from: pasteboard) else {
             logger.warning("无法获取任何格式的图片数据")
             return
         }
+
+        let data = payload.data
+        logger.info("成功获取 \(payload.formatName) 格式图片: \(data.count) 字节")
 
         guard Int64(data.count) <= maxClipboardImageBytes else {
             logger.warning("图片超过 50MB，已跳过预览存储以保护内存")
@@ -1110,16 +1110,11 @@ class ClipboardManager: ObservableObject {
         // 图片内容指纹在 addClipboardItem 中按大小选择后台计算，避免在主线程
         // 对大数据重复执行 Data.hashValue 和 SHA-256。
         let fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
-        let imageInfo = "图片 (\(detectedFormat), \(fileSize))"
+        let imageInfo = "图片 (\(payload.formatName), \(fileSize))"
 
         // 直接保存原始数据，让 ImagePreviewView 处理解码
         addClipboardItemWithData(content: imageInfo, type: ClipboardItemType.image, data: data)
         logger.info("图片数据已添加: \(imageInfo)")
-        
-        // 立即通知UI更新
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: NSNotification.Name("ClipboardItemsChanged"), object: nil)
-        }
     }
     
     // 处理 SVG 图片
@@ -3258,33 +3253,8 @@ class ClipboardManager: ObservableObject {
             components.append(String(text.prefix(200)))
         }
         
-        // 为图片添加更详细的哈希（包含数据大小和部分内容）
-        var hasImageData = false
-        for imageType in [NSPasteboard.PasteboardType.png, NSPasteboard.PasteboardType.tiff] {
-            if let imageData = pasteboard.data(forType: imageType) {
-                // 使用大小和前64字节的哈希作为图片指纹
-                let prefix = imageData.prefix(64)
-                let prefixHash = prefix.hashValue
-                components.append("img_\(imageType.rawValue):\(imageData.count)_\(prefixHash)")
-                hasImageData = true
-                break
-            }
-        }
-        
-        // 如果没有找到标准图片格式，检查其他图片类型
-        if !hasImageData, let types = pasteboard.types {
-            for type in types {
-                let typeString = type.rawValue.lowercased()
-                if typeString.contains("image") || typeString.contains("png") || typeString.contains("jpg") {
-                    if let data = pasteboard.data(forType: type) {
-                        let prefix = data.prefix(64)
-                        let prefixHash = prefix.hashValue
-                        components.append("img_\(type.rawValue):\(data.count)_\(prefixHash)")
-                        break
-                    }
-                }
-            }
-        }
+        // 不在快速去重阶段读取图片二进制。图片数据在正式处理时只获取一次，
+        // 历史去重继续使用完整 SHA-256 指纹。
         
         // 为文件URL添加路径信息
         if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !fileURLs.isEmpty {
@@ -3623,8 +3593,8 @@ enum ImageThumbnailDecoder {
         let pixelHeight: Int
     }
 
-    static func cacheKey(itemID: UUID) -> String {
-        "\(itemID.uuidString)-thumbnail-\(defaultMaxPixelSize)"
+    static func cacheKey(itemID: UUID, maxPixelSize: Int = defaultMaxPixelSize) -> String {
+        "\(itemID.uuidString)-thumbnail-\(maxPixelSize)"
     }
 
     static func imageData(for item: ClipboardItem) -> Data? {
@@ -3757,6 +3727,25 @@ class ImageCacheManager {
         } else {
             return nil
         }
+    }
+
+    func thumbnail(itemID: UUID, data: Data, maxPixelSize: Int) -> NSImage? {
+        let key = ImageThumbnailDecoder.cacheKey(
+            itemID: itemID,
+            maxPixelSize: maxPixelSize
+        )
+        if let cached = getImage(forKey: key) {
+            return cached
+        }
+
+        guard let thumbnail = ImageThumbnailDecoder.makeThumbnail(
+            from: data,
+            maxPixelSize: maxPixelSize
+        ) else {
+            return nil
+        }
+        setImage(thumbnail, forKey: key)
+        return thumbnail
     }
 
     /// 从缓存中移除指定的图片

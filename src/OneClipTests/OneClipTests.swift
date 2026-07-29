@@ -105,6 +105,84 @@ struct OneClipTests {
         #expect(ImageThumbnailDecoder.estimatedMemoryCost(of: thumbnail) <= 64 * 64 * 4)
     }
 
+    @Test func menuThumbnailCacheReusesDecodedImage() throws {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 80,
+            pixelsHigh: 40,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let pngData = try #require(bitmap.representation(using: .png, properties: [:]))
+        let itemID = UUID()
+        let cacheKey = ImageThumbnailDecoder.cacheKey(itemID: itemID, maxPixelSize: 48)
+        ImageCacheManager.shared.removeImage(forKey: cacheKey)
+
+        let first = try #require(ImageCacheManager.shared.thumbnail(
+            itemID: itemID,
+            data: pngData,
+            maxPixelSize: 48
+        ))
+        let second = try #require(ImageCacheManager.shared.thumbnail(
+            itemID: itemID,
+            data: pngData,
+            maxPixelSize: 48
+        ))
+
+        #expect(first === second)
+        ImageCacheManager.shared.removeImage(forKey: cacheKey)
+    }
+
+    @Test func imagePayloadReaderFetchesOnlyPreferredDeclaredType() throws {
+        let provider = CountingImageDataProvider(
+            types: [.png, .tiff],
+            payloads: [
+                .png: Data(repeating: 0x01, count: 32),
+                .tiff: Data(repeating: 0x02, count: 32)
+            ]
+        )
+
+        let payload = try #require(ClipboardImagePayloadReader.read(from: provider))
+
+        #expect(payload.type == .png)
+        #expect(payload.formatName == "PNG")
+        #expect(provider.readCount == 1)
+    }
+
+    @Test func clipboardItemDateCodingPreservesTimestampAndLegacyNumericDates() throws {
+        let timestamp = Date(timeIntervalSince1970: 1_721_234_567.123)
+        let item = ClipboardItem(
+            id: UUID(),
+            content: "date",
+            type: .text,
+            timestamp: timestamp,
+            lastUsedAt: timestamp.addingTimeInterval(10)
+        )
+
+        let encoded = try JSONEncoder().encode(item)
+        let decoded = try JSONDecoder().decode(ClipboardItem.self, from: encoded)
+        #expect(abs(decoded.timestamp.timeIntervalSince(timestamp)) < 0.001)
+        #expect(abs(try #require(decoded.lastUsedAt).timeIntervalSince(timestamp.addingTimeInterval(10))) < 0.001)
+
+        let legacyJSON = """
+        {
+          "id": "\(UUID().uuidString)",
+          "content": "legacy",
+          "type": "text",
+          "timestamp": 1234.5,
+          "data": "",
+          "isFavorite": false
+        }
+        """
+        let legacy = try JSONDecoder().decode(ClipboardItem.self, from: Data(legacyJSON.utf8))
+        #expect(legacy.timestamp == Date(timeIntervalSince1970: 1234.5))
+    }
+
     @Test func targetApplicationMustMatchFrontmostPID() {
         #expect(WindowManager.isTargetApplicationFrontmost(targetPID: 42, frontmostPID: 42))
         #expect(!WindowManager.isTargetApplicationFrontmost(targetPID: 42, frontmostPID: 43))
@@ -395,4 +473,88 @@ struct OneClipTests {
         #expect(reloadedItems.first?.lastUsedAt == Date(timeIntervalSince1970: 3_000))
     }
 
+    @Test func incrementalSaveDoesNotRewriteOtherDateIndex() throws {
+        let storageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: storageURL) }
+
+        let store = ClipboardStore(getCleanupDays: { 0 }, storageDirectory: storageURL)
+        let calendar = Calendar(identifier: .gregorian)
+        let firstDate = try #require(calendar.date(from: DateComponents(
+            timeZone: TimeZone(secondsFromGMT: 0),
+            year: 2024,
+            month: 1,
+            day: 2,
+            hour: 12
+        )))
+        let secondDate = firstDate.addingTimeInterval(24 * 60 * 60)
+        let firstItem = ClipboardItem(
+            id: UUID(),
+            content: "first day",
+            type: .text,
+            timestamp: firstDate
+        )
+        store.saveItem(firstItem)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let firstIndex = storageURL
+            .appendingPathComponent(formatter.string(from: firstDate), isDirectory: true)
+            .appendingPathComponent("items.json")
+        let sentinelDate = Date(timeIntervalSince1970: 100)
+        try FileManager.default.setAttributes(
+            [.modificationDate: sentinelDate],
+            ofItemAtPath: firstIndex.path
+        )
+
+        let secondItem = ClipboardItem(
+            id: UUID(),
+            content: "second day",
+            type: .text,
+            timestamp: secondDate
+        )
+        store.saveItem(secondItem)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: firstIndex.path)
+        #expect(attributes[.modificationDate] as? Date == sentinelDate)
+        #expect(store.loadItems().count == 2)
+
+        let secondIndex = storageURL
+            .appendingPathComponent(formatter.string(from: secondDate), isDirectory: true)
+            .appendingPathComponent("items.json")
+        let secondSentinelDate = Date(timeIntervalSince1970: 200)
+        try FileManager.default.setAttributes(
+            [.modificationDate: secondSentinelDate],
+            ofItemAtPath: secondIndex.path
+        )
+
+        store.markItemUsed(firstItem, at: secondDate.addingTimeInterval(60))
+        let attributesAfterUse = try FileManager.default.attributesOfItem(atPath: secondIndex.path)
+        #expect(attributesAfterUse[.modificationDate] as? Date == secondSentinelDate)
+
+        store.deleteItem(firstItem)
+        let attributesAfterDelete = try FileManager.default.attributesOfItem(atPath: secondIndex.path)
+        #expect(attributesAfterDelete[.modificationDate] as? Date == secondSentinelDate)
+        #expect(store.loadItems().map(\.id) == [secondItem.id])
+    }
+
+}
+
+private final class CountingImageDataProvider: ClipboardImageDataProviding {
+    let types: [NSPasteboard.PasteboardType]?
+    private let payloads: [NSPasteboard.PasteboardType: Data]
+    private(set) var readCount = 0
+
+    init(
+        types: [NSPasteboard.PasteboardType],
+        payloads: [NSPasteboard.PasteboardType: Data]
+    ) {
+        self.types = types
+        self.payloads = payloads
+    }
+
+    func data(forType type: NSPasteboard.PasteboardType) -> Data? {
+        readCount += 1
+        return payloads[type]
+    }
 }

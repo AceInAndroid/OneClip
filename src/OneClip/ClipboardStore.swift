@@ -74,21 +74,17 @@ class ClipboardStore: ObservableObject {
         storeLock.lock()
         defer { storeLock.unlock() }
 
-        cleanupOldFilesUnsafe()
-        
-        var items = loadItemsUnsafe()
-        
-        // 移除重复项
-        items.removeAll { $0.id == item.id }
-        
-        // 处理所有数据的持久化存储（统一存储到日期文件夹）
+        // UUID 在项目生命周期内不变，timestamp 也不会因排序更新。
+        // 因此新增和更新只需读写所属日期的索引，过期清理由定时任务处理。
         let processedItem = processPersistentStorage(for: item)
-        
-        // 添加到列表开头
-        items.insert(processedItem, at: 0)
-        
-        // 保存到存储
-        saveItemsUnsafe(items)
+        do {
+            var dateItems = try loadDateItemsUnsafe(for: item.timestamp)
+            dateItems.removeAll { $0.id == item.id }
+            dateItems.insert(processedItem, at: 0)
+            try writeDateItemsUnsafe(dateItems, for: item.timestamp)
+        } catch {
+            Logger.shared.error("保存项目索引失败: \(error.localizedDescription)")
+        }
         return processedItem
     }
     
@@ -175,12 +171,14 @@ class ClipboardStore: ObservableObject {
     func deleteItem(_ item: ClipboardItem) {
         storeLock.lock()
         defer { storeLock.unlock() }
-        
-        var allItems = loadItemsUnsafe()
-        allItems.removeAll { $0.id == item.id }
-        
-        // 直接保存更新后的项目列表，不调用 clearAllItems()
-        saveItemsUnsafe(allItems)
+
+        do {
+            var dateItems = try loadDateItemsUnsafe(for: item.timestamp)
+            dateItems.removeAll { $0.id == item.id }
+            try writeDateItemsUnsafe(dateItems, for: item.timestamp)
+        } catch {
+            Logger.shared.error("删除项目索引失败: \(error.localizedDescription)")
+        }
         Logger.shared.info("项目已删除: \(item.id)")
     }
 
@@ -190,19 +188,26 @@ class ClipboardStore: ObservableObject {
         storeLock.lock()
         defer { storeLock.unlock() }
 
-        var items = loadItemsUnsafe()
-        let persistedItem = items.first { $0.id == item.id }
-        items.removeAll { $0.id == item.id }
+        do {
+            var dateItems = try loadDateItemsUnsafe(for: item.timestamp)
+            let persistedItem = dateItems.first { $0.id == item.id }
+            dateItems.removeAll { $0.id == item.id }
 
-        var updatedItem = item
-        updatedItem.lastUsedAt = [persistedItem?.lastUsedAt, item.lastUsedAt, usedAt]
-            .compactMap { $0 }
-            .max() ?? usedAt
+            var updatedItem = item
+            updatedItem.lastUsedAt = [persistedItem?.lastUsedAt, item.lastUsedAt, usedAt]
+                .compactMap { $0 }
+                .max() ?? usedAt
 
-        let processedItem = processPersistentStorage(for: updatedItem)
-        items.append(processedItem)
-        saveItemsUnsafe(items)
-        return processedItem
+            let processedItem = processPersistentStorage(for: updatedItem)
+            dateItems.append(processedItem)
+            try writeDateItemsUnsafe(dateItems, for: item.timestamp)
+            return processedItem
+        } catch {
+            Logger.shared.error("更新最近使用时间失败: \(error.localizedDescription)")
+            var fallbackItem = item
+            fallbackItem.lastUsedAt = [item.lastUsedAt, usedAt].compactMap { $0 }.max() ?? usedAt
+            return fallbackItem
+        }
     }
 
     /// 为旧历史补齐持久化指纹，并在一次写入中移除重复记录。
@@ -240,21 +245,35 @@ class ClipboardStore: ObservableObject {
         }
         
         for (dateString, dateItems) in groupedItems {
-            let dateDirectory = storageDirectory.appendingPathComponent(dateString, isDirectory: true)
-            
             do {
-                // 确保日期目录存在
-                try fileManager.createDirectory(at: dateDirectory, withIntermediateDirectories: true, attributes: nil)
-                
-                // 保存项目到JSON文件
-                let itemsFile = dateDirectory.appendingPathComponent("items.json")
-                let data = try JSONEncoder().encode(dateItems)
-                try data.write(to: itemsFile)
-                
+                try writeDateItemsUnsafe(dateItems, dateString: dateString)
             } catch {
                 Logger.shared.error("保存日期项目失败 \(dateString): \(error.localizedDescription)")
             }
         }
+    }
+
+    private func loadDateItemsUnsafe(for date: Date) throws -> [ClipboardItem] {
+        let itemsFile = getStorageDirectory(for: date).appendingPathComponent("items.json")
+        guard fileManager.fileExists(atPath: itemsFile.path) else { return [] }
+        let data = try Data(contentsOf: itemsFile)
+        return try JSONDecoder().decode([ClipboardItem].self, from: data)
+    }
+
+    private func writeDateItemsUnsafe(_ items: [ClipboardItem], for date: Date) throws {
+        try writeDateItemsUnsafe(items, dateString: dateFormatter.string(from: date))
+    }
+
+    private func writeDateItemsUnsafe(_ items: [ClipboardItem], dateString: String) throws {
+        let dateDirectory = storageDirectory.appendingPathComponent(dateString, isDirectory: true)
+        try fileManager.createDirectory(
+            at: dateDirectory,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        let itemsFile = dateDirectory.appendingPathComponent("items.json")
+        let data = try JSONEncoder().encode(items)
+        try data.write(to: itemsFile, options: .atomic)
     }
 
     private func replaceItemRecordsUnsafe(_ items: [ClipboardItem]) {

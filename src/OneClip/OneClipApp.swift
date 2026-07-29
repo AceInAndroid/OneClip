@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var aboutWindow: NSWindow?
     private var permissionGuideCloseObserver: NSObjectProtocol?
     private var permissionGuideCompletionWorkItem: DispatchWorkItem?
+    private let statusMenuToggleIdentifier = NSUserInterfaceItemIdentifier("PasteLight.StatusMenu.Toggle")
     
     var mainWindow: NSWindow?
     
@@ -636,10 +637,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 // 菜单只解码最长边 48px 的缩略图。
                 if item.type == .image {
                     if let imageData,
-                       let thumbnail = ImageThumbnailDecoder.makeThumbnail(
-                           from: imageData,
+                       let cachedThumbnail = ImageCacheManager.shared.thumbnail(
+                           itemID: item.id,
+                           data: imageData,
                            maxPixelSize: 48
-                       ) {
+                       ),
+                       let thumbnail = cachedThumbnail.copy() as? NSImage {
                         let scale = min(24 / thumbnail.size.width, 24 / thumbnail.size.height, 1)
                         thumbnail.size = NSSize(
                             width: thumbnail.size.width * scale,
@@ -709,6 +712,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             action: #selector(toggleWindow),
             keyEquivalent: shortcut.menuKeyEquivalent
         )
+        toggleItem.identifier = statusMenuToggleIdentifier
         toggleItem.keyEquivalentModifierMask = shortcut.modifierFlags
         if let toggleIcon = NSImage(systemSymbolName: "rectangle.stack.fill", accessibilityDescription: "Toggle") {
             toggleIcon.size = NSSize(width: 16, height: 16)
@@ -1059,7 +1063,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateStatusBarMenu()
+            self?.updateStatusMenuWindowState()
         }
         
         NotificationCenter.default.addObserver(
@@ -1067,7 +1071,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateStatusBarMenu()
+            self?.updateStatusMenuWindowState()
         }
         
         NotificationCenter.default.addObserver(
@@ -1075,7 +1079,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateStatusBarMenu()
+            self?.updateStatusMenuWindowState()
         }
         
         NotificationCenter.default.addObserver(
@@ -1083,8 +1087,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.updateStatusBarMenu()
+            self?.updateStatusMenuWindowState()
         }
+    }
+
+    private func updateStatusMenuWindowState() {
+        guard let toggleItem = statusMenu?.items.first(where: {
+            $0.identifier == statusMenuToggleIdentifier
+        }) else {
+            return
+        }
+        toggleItem.title = isWindowCurrentlyActiveAndVisible()
+            ? "隐藏剪贴板窗口"
+            : "显示剪贴板窗口"
     }
     
     private func setupWindowCloseBehavior() {
