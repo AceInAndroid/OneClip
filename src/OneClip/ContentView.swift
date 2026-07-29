@@ -27,6 +27,79 @@ final class PasteRequestGate {
     }
 }
 
+struct ClipboardListSnapshot: Equatable {
+    struct IndexedItem: Identifiable, Equatable {
+        let index: Int
+        let item: ClipboardItem
+
+        var id: UUID { item.id }
+    }
+
+    static let empty = ClipboardListSnapshot(
+        items: [],
+        indexedItems: [],
+        typeCounts: [:],
+        totalCount: 0,
+        favoriteCount: 0
+    )
+
+    let items: [ClipboardItem]
+    let indexedItems: [IndexedItem]
+    let typeCounts: [ClipboardItemType: Int]
+    let totalCount: Int
+    let favoriteCount: Int
+
+    static func make(
+        historyItems: [ClipboardItem],
+        favoriteItems: [ClipboardItem],
+        selectedType: ClipboardItemType?,
+        favoritesOnly: Bool,
+        query: String
+    ) -> ClipboardListSnapshot {
+        var typeCounts: [ClipboardItemType: Int] = [:]
+        typeCounts.reserveCapacity(ClipboardItemType.allCases.count)
+        var fallbackFavorites: [ClipboardItem] = []
+
+        for item in historyItems {
+            typeCounts[item.type, default: 0] += 1
+            if item.isFavorite {
+                fallbackFavorites.append(item)
+            }
+        }
+
+        let availableFavorites = favoriteItems.isEmpty
+            ? fallbackFavorites
+            : favoriteItems.sorted { $0.sortTimestamp > $1.sortTimestamp }
+        let categoryItems: [ClipboardItem]
+        if favoritesOnly {
+            categoryItems = availableFavorites
+        } else if let selectedType {
+            categoryItems = historyItems.filter { $0.type == selectedType }
+        } else {
+            categoryItems = historyItems
+        }
+
+        let displayedItems: [ClipboardItem]
+        if query.isEmpty {
+            displayedItems = categoryItems
+        } else {
+            displayedItems = categoryItems.filter {
+                $0.content.localizedCaseInsensitiveContains(query)
+            }
+        }
+
+        return ClipboardListSnapshot(
+            items: displayedItems,
+            indexedItems: displayedItems.enumerated().map {
+                IndexedItem(index: $0.offset, item: $0.element)
+            },
+            typeCounts: typeCounts,
+            totalCount: historyItems.count,
+            favoriteCount: availableFavorites.count
+        )
+    }
+}
+
 // 确保ClipboardItemRowView可以被找到
 // ClipboardItemRowView在同一个模块中定义
 
@@ -51,6 +124,7 @@ struct ContentView: View {
     @State private var showDeleteConfirmation = false // 删除确认对话框
     @State private var selectedItemToDelete: ClipboardItem? = nil // 待删除的项目
     @State private var pasteRequestGate = PasteRequestGate()
+    @State private var listSnapshot = ClipboardListSnapshot.empty
 
     // 动画辅助方法
     private func performAnimation(_ animation: Animation, action: @escaping () -> Void) {
@@ -141,50 +215,7 @@ struct ContentView: View {
         }
     }
     
-    // 简化的过滤逻辑 - 直接计算避免缓存问题
-    var filteredItems: [ClipboardItem] {
-        var items: [ClipboardItem]
-        
-        // 按分类过滤
-        if selectedCategory == .favorites {
-            // 优先从FavoriteManager获取收藏项目，确保数据一致性
-            let favoriteItems = FavoriteManager.shared.getAllFavorites()
-            if !favoriteItems.isEmpty {
-                items = favoriteItems
-            } else {
-                // 如果FavoriteManager为空，从主列表中过滤收藏项目作为备选
-                items = clipboardManager.clipboardItems.filter { $0.isFavorite }
-            }
-        } else if selectedCategory != .all {
-            let targetType: ClipboardItemType = {
-                switch selectedCategory {
-                case .all, .favorites: return .text // 不会用到
-                case .text: return .text
-                case .image: return .image
-                case .file: return .file
-                case .video: return .video
-                case .audio: return .audio
-                case .document: return .document
-                case .code: return .code
-                case .archive: return .archive
-                case .executable: return .executable
-                }
-            }()
-            
-            items = clipboardManager.clipboardItems.filter { $0.type == targetType }
-        } else {
-            items = clipboardManager.clipboardItems
-        }
-        
-        // 按搜索文本过滤
-        if !searchText.isEmpty {
-            items = items.filter { item in
-                item.content.localizedCaseInsensitiveContains(searchText)
-            }
-        }
-        
-        return items
-    }
+    private var filteredItems: [ClipboardItem] { listSnapshot.items }
     
     // 分解复杂的body为更小的计算属性
     private var topToolbar: some View {
@@ -397,7 +428,9 @@ struct ContentView: View {
                             EmptyStateView()
                         }
                     } else {
-                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                        ForEach(listSnapshot.indexedItems) { indexedItem in
+                            let index = indexedItem.index
+                            let item = indexedItem.item
                             ClipboardItemRowView(
                                 item: item,
                                 onCopy: {
@@ -514,7 +547,9 @@ struct ContentView: View {
                         }
                         .frame(width: 220, height: 170)
                     } else {
-                        ForEach(Array(filteredItems.enumerated()), id: \.element.id) { index, item in
+                        ForEach(listSnapshot.indexedItems) { indexedItem in
+                            let index = indexedItem.index
+                            let item = indexedItem.item
                             ClipboardShelfItemView(
                                 item: item,
                                 index: index,
@@ -660,6 +695,7 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.2), value: showFeedback)
         )
         .onAppear {
+            refreshListSnapshot()
             // 安全地初始化组件，避免ViewBridge错误
             DispatchQueue.main.async {
                 self.clipboardManager.startMonitoring()
@@ -696,13 +732,21 @@ struct ContentView: View {
                 }
             }
         }
+        .onChange(of: clipboardManager.clipboardItems) { _, _ in
+            refreshListSnapshot()
+        }
+        .onChange(of: favoriteManager.favoriteItems) { _, _ in
+            refreshListSnapshot()
+        }
         .onChange(of: searchText) { _, _ in
             // 搜索文本变化时重置选中状态
             selectedIndex = nil
+            refreshListSnapshot()
         }
         .onChange(of: selectedCategory) { _, _ in
             // 分类变化时重置选中状态
             selectedIndex = nil
+            refreshListSnapshot()
         }
         .sheet(isPresented: $showShortcutsHelp) {
             ShortcutsHelpView {
@@ -1185,37 +1229,54 @@ struct ContentView: View {
     }
     
     // MARK: - 分类相关方法
+    private func refreshListSnapshot() {
+        let selectedType: ClipboardItemType?
+        switch selectedCategory {
+        case .all, .favorites: selectedType = nil
+        case .text: selectedType = .text
+        case .image: selectedType = .image
+        case .file: selectedType = .file
+        case .video: selectedType = .video
+        case .audio: selectedType = .audio
+        case .document: selectedType = .document
+        case .code: selectedType = .code
+        case .archive: selectedType = .archive
+        case .executable: selectedType = .executable
+        }
+
+        listSnapshot = ClipboardListSnapshot.make(
+            historyItems: clipboardManager.clipboardItems,
+            favoriteItems: favoriteManager.favoriteItems,
+            selectedType: selectedType,
+            favoritesOnly: selectedCategory == .favorites,
+            query: searchText
+        )
+    }
+
     private func getCategoryCount(_ category: ContentCategory) -> Int {
         switch category {
         case .all:
-            return clipboardManager.clipboardItems.count
+            return listSnapshot.totalCount
         case .favorites:
-            // 优先使用FavoriteManager的计数
-            let favoriteManagerCount = FavoriteManager.shared.favoriteCount
-            if favoriteManagerCount > 0 {
-                return favoriteManagerCount
-            } else {
-                // 如果FavoriteManager计数为0，使用主列表计数作为备选
-                return clipboardManager.clipboardItems.filter { $0.isFavorite }.count
-            }
+            return listSnapshot.favoriteCount
         case .text:
-            return clipboardManager.clipboardItems.filter { $0.type == .text }.count
+            return listSnapshot.typeCounts[.text, default: 0]
         case .image:
-            return clipboardManager.clipboardItems.filter { $0.type == .image }.count
+            return listSnapshot.typeCounts[.image, default: 0]
         case .file:
-            return clipboardManager.clipboardItems.filter { $0.type == .file }.count
+            return listSnapshot.typeCounts[.file, default: 0]
         case .video:
-            return clipboardManager.clipboardItems.filter { $0.type == .video }.count
+            return listSnapshot.typeCounts[.video, default: 0]
         case .audio:
-            return clipboardManager.clipboardItems.filter { $0.type == .audio }.count
+            return listSnapshot.typeCounts[.audio, default: 0]
         case .document:
-            return clipboardManager.clipboardItems.filter { $0.type == .document }.count
+            return listSnapshot.typeCounts[.document, default: 0]
         case .code:
-            return clipboardManager.clipboardItems.filter { $0.type == .code }.count
+            return listSnapshot.typeCounts[.code, default: 0]
         case .archive:
-            return clipboardManager.clipboardItems.filter { $0.type == .archive }.count
+            return listSnapshot.typeCounts[.archive, default: 0]
         case .executable:
-            return clipboardManager.clipboardItems.filter { $0.type == .executable }.count
+            return listSnapshot.typeCounts[.executable, default: 0]
         }
     }
 }

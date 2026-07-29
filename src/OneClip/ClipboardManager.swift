@@ -3,7 +3,6 @@ import AppKit
 import Combine
 import CoreGraphics
 import ImageIO
-import PDFKit
 import UserNotifications
 
 // 确保能访问 ClipboardItemType 和 ClipboardItem
@@ -171,24 +170,8 @@ class ClipboardManager: ObservableObject {
     internal lazy var store = ClipboardStore(getCleanupDays: { [weak self] in
         return self?.settingsManager.autoCleanupDays ?? HistoryRetentionPolicy.defaultDays
     })
-    private let cacheDirectory: URL
-    
-    // 性能优化：内存管理
-    private let maxImageSize: Int = 10 * 1024 * 1024 // 10MB
     private let maxClipboardImageBytes = ClipboardPayloadLimits.maxImageBytes
-    private var imageCache: NSCache<NSString, NSData> = {
-        let cache = NSCache<NSString, NSData>()
-        cache.totalCostLimit = 50 * 1024 * 1024 // 50MB
-        cache.countLimit = 20
-        return cache
-    }()
-    
-    // 图片验证缓存 - 避免重复验证相同数据
-    private var imageValidationCache: NSCache<NSString, NSNumber> = {
-        let cache = NSCache<NSString, NSNumber>()
-        cache.countLimit = 100
-        return cache
-    }()
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     
     // 防止重复监控的机制
     private var isPerformingCopyOperation = false
@@ -208,18 +191,12 @@ class ClipboardManager: ObservableObject {
     private var currentActivityState: UserActivityState = .active
     
     // 去重机制优化
-    private var recentHashes: Set<String> = []
     private var itemFingerprints: [UUID: String] = [:]
     private var knownFingerprints: Set<String> = []
     private let backgroundFingerprintThreshold = 1024 * 1024
     private var isFingerprintMigrationRunning = false
-    private var lastHashCleanup: Date = Date()
     private var lastMemoryRetentionCleanup = Date.distantPast
     private let memoryRetentionCleanupInterval: TimeInterval = 60 * 60
-    
-    // 缓存清理管理
-    private var cacheCleanupTimer: Timer?
-    private let cacheCleanupInterval: TimeInterval = 600 // 10分钟清理一次
     
     // 针对浏览器复制优化的去重机制
     private var lastContentHash: String = ""
@@ -246,22 +223,8 @@ class ClipboardManager: ObservableObject {
     @Published var filteredItems: [ClipboardItem] = []
     
     private init() {
-        // 创建缓存目录
-        let cachesURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        cacheDirectory = cachesURL.appendingPathComponent("OneClip", isDirectory: true)
-        
-        do {
-            try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true, attributes: nil)
-            logger.info("缓存目录创建成功: \(cacheDirectory.path)")
-        } catch {
-            logger.error("创建缓存目录失败: \(error.localizedDescription)")
-        }
-        
         // 设置内存压力监听
         setupMemoryPressureMonitoring()
-        
-        // 启动智能缓存清理
-        setupSmartCacheCleanup()
         
         // 设置用户活动监控
         setupUserActivityMonitoring()
@@ -444,9 +407,9 @@ class ClipboardManager: ObservableObject {
         // 停止所有定时器
         monitoringTimer?.invalidate()
         monitoringTimer = nil
-        
-        cacheCleanupTimer?.invalidate()
-        cacheCleanupTimer = nil
+
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
         
         // 停止用户活动监控
         activityMonitor.stopMonitoring()
@@ -463,10 +426,6 @@ class ClipboardManager: ObservableObject {
         
         monitoringTimer?.invalidate()
         monitoringTimer = nil
-        
-        // 停止缓存清理定时器
-        cacheCleanupTimer?.invalidate()
-        cacheCleanupTimer = nil
         
         // 停止用户活动监控
         activityMonitor.stopMonitoring()
@@ -654,7 +613,7 @@ class ClipboardManager: ObservableObject {
         // 3. 列表使用系统提供的纯文本。Excel 表格的制表符和换行会保留，
         // RTF/HTML 作为默认粘贴时恢复格式的隐藏数据保存，不参与列表展示。
         if let rawPlainText = pasteboard.string(forType: .string) {
-            let plainText = ClipboardTextSanitizer.clean(rawPlainText)
+            let plainText = ClipboardTextSanitizer.cleanForHistory(rawPlainText)
             if !plainText.isEmpty {
                 addTextClipboardItem(
                     content: plainText,
@@ -668,7 +627,7 @@ class ClipboardManager: ObservableObject {
         if let rtfData = pasteboard.data(forType: .rtf),
            ClipboardPayloadLimits.acceptsFormattedText(byteCount: rtfData.count),
            let attributedString = NSAttributedString(rtf: rtfData, documentAttributes: nil) {
-            let plainText = ClipboardTextSanitizer.clean(attributedString.string)
+            let plainText = ClipboardTextSanitizer.cleanForHistory(attributedString.string)
             if !plainText.isEmpty {
                 addTextClipboardItem(
                     content: plainText,
@@ -817,12 +776,12 @@ class ClipboardManager: ObservableObject {
             options: options,
             documentAttributes: nil
         ) {
-            return ClipboardTextSanitizer.clean(attributedString.string)
+            return ClipboardTextSanitizer.cleanForHistory(attributedString.string)
         }
 
         guard let html = String(data: htmlData, encoding: .utf8) else { return "" }
         let withoutTags = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        return ClipboardTextSanitizer.clean(withoutTags)
+        return ClipboardTextSanitizer.cleanForHistory(withoutTags)
     }
     
     // MARK: - Enhanced File Type Support
@@ -1117,491 +1076,6 @@ class ClipboardManager: ObservableObject {
         logger.info("图片数据已添加: \(imageInfo)")
     }
     
-    // 处理 SVG 图片
-    private func handleSVGImage(data: Data, format: String) {
-        let imageInfo = "SVG 矢量图 (\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)))"
-        if !isDuplicateContent(imageInfo, type: .image) {
-            addClipboardItemWithData(content: imageInfo, type: .image, data: data)
-            logger.info("SVG 图片已添加: \(imageInfo)")
-        } else {
-            logger.debug("跳过重复 SVG 内容")
-        }
-    }
-    
-    // 处理 PDF 图片
-    private func handlePDFImage(data: Data, format: String) {
-        // 尝试将 PDF 转换为图片预览
-        if let pdfDocument = PDFDocument(data: data),
-           let firstPage = pdfDocument.page(at: 0) {
-            let pageRect = firstPage.bounds(for: .mediaBox)
-            
-            // 创建图像表示
-            let image = NSImage(size: pageRect.size)
-            image.lockFocus()
-            
-            if let context = NSGraphicsContext.current?.cgContext {
-                context.saveGState()
-                context.translateBy(x: 0, y: pageRect.size.height)
-                context.scaleBy(x: 1.0, y: -1.0)
-                firstPage.draw(with: .mediaBox, to: context)
-                context.restoreGState()
-            }
-            
-            image.unlockFocus()
-            
-            if let imageData = image.tiffRepresentation,
-               let bitmapRep = NSBitmapImageRep(data: imageData),
-               let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-                let imageInfo = "PDF 图片 (\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)))"
-                if !isDuplicateContent(imageInfo, type: .image) {
-                    addClipboardItemWithData(content: imageInfo, type: .image, data: pngData)
-                    logger.info("PDF 图片已添加: \(imageInfo)")
-                } else {
-                    logger.debug("跳过重复 PDF 内容")
-                }
-                return
-            }
-        }
-        
-        // 如果无法处理，作为文档处理
-        let imageInfo = "PDF 文档 (\(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)))"
-        if !isDuplicateContent(imageInfo, type: .document) {
-            addClipboardItemWithData(content: imageInfo, type: .document, data: data)
-            logger.info("PDF 文档已添加: \(imageInfo)")
-        }
-    }
-    
-    // 处理位图格式图片
-    private func handleBitmapImage(data: Data, format: String, originalType: NSPasteboard.PasteboardType?) {
-        logger.info("处理位图图片: \(format), 数据大小: \(data.count) 字节")
-        
-        // 使用缓存验证避免重复处理
-        if !isValidImageDataCached(data) {
-            logger.warning("图片数据验证失败，跳过处理")
-            return
-        }
-        
-        // 放宽图片验证，先尝试直接创建 NSImage
-        var nsImage: NSImage?
-        var processedData = data
-        
-        // 首先尝试直接解析
-        nsImage = NSImage(data: data)
-        logger.debug("直接解析结果: \(nsImage != nil ? "成功" : "失败")")
-        
-        // 如果直接解析失败，尝试数据修复
-        if nsImage == nil {
-            logger.debug("尝试修复图片数据...")
-            if let repairedData = attemptDataRepair(data, format: format) {
-                nsImage = NSImage(data: repairedData)
-                if nsImage != nil {
-                    processedData = repairedData
-                    logger.info("数据修复成功")
-                } else {
-                    logger.warning("数据修复后仍无法解析")
-                }
-            }
-        }
-        
-        // 如果还是失败，尝试不同的解码方式
-        if nsImage == nil {
-            logger.debug("尝试其他解码方式...")
-            
-            // 尝试 CGImage 方式
-            if let cgImageSource = CGImageSourceCreateWithData(data as CFData, nil),
-               let cgImage = CGImageSourceCreateImageAtIndex(cgImageSource, 0, nil) {
-                nsImage = NSImage(cgImage: cgImage, size: NSSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height)))
-                logger.info("CGImage 解码成功")
-            }
-        }
-        
-        // 如果仍然失败，但数据看起来像图片，就保存原始数据并提供详细信息
-        if nsImage == nil {
-            if isValidImageDataHeader(data.prefix(16), format: format) {
-                logger.warning("无法解析图片但数据头部有效，保存原始数据")
-                
-                // 生成详细的调试信息
-                let headerBytes = data.prefix(16)
-                let hexString = headerBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-                logger.debug("数据头部: \(hexString)")
-                
-                // 检测可能的格式
-                let detectedFormat = detectImageFormatFromHeader(data)
-                logger.info("检测到的格式: \(detectedFormat)")
-                
-                let imageInfo = "图片数据 (\(detectedFormat), \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)))"
-                if !isDuplicateContent(imageInfo, type: .image) {
-                    addClipboardItemWithData(content: imageInfo, type: .image, data: data)
-                    logger.info("原始图片数据已添加: \(imageInfo)")
-                }
-                return
-            } else {
-                logger.error("无法解析图片数据且数据头部无效")
-                
-                // 即使无法解析，也要提供调试信息
-                let headerBytes = data.prefix(16)
-                let hexString = headerBytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-                logger.debug("无效数据头部: \(hexString)")
-                
-                // 作为未知数据保存，让用户知道有内容但无法预览
-                let imageInfo = "无法识别的图片数据 (\(format), \(ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)))"
-                if !isDuplicateContent(imageInfo, type: .image) {
-                    addClipboardItemWithData(content: imageInfo, type: .image, data: data)
-                    logger.info("无法识别的图片数据已添加: \(imageInfo)")
-                }
-                return
-            }
-        }
-        
-        // 验证图片尺寸
-        guard let imageSize = nsImage?.size,
-              imageSize.width > 0 && imageSize.height > 0 else {
-            logger.warning("图片尺寸无效: \(nsImage?.size ?? CGSize.zero)")
-            return
-        }
-        
-        // 生成详细的图片描述
-        let pixelSize = "\(Int(imageSize.width))×\(Int(imageSize.height))"
-        let fileSize = ByteCountFormatter.string(fromByteCount: Int64(processedData.count), countStyle: .file)
-        let imageInfo = "图片 (\(pixelSize), \(format), \(fileSize))"
-        
-        if !isDuplicateContent(imageInfo, type: .image) {
-            // 预处理图片数据，确保稳定性
-            let stableImageData = preprocessImageData(processedData, format: format)
-            
-            // 最终验证
-            if NSImage(data: stableImageData) != nil {
-                addClipboardItemWithData(content: imageInfo, type: .image, data: stableImageData)
-                logger.info("位图图片已添加: \(imageInfo)")
-            } else {
-                // 如果预处理失败，使用原始数据
-                addClipboardItemWithData(content: imageInfo, type: .image, data: processedData)
-                logger.info("原始位图数据已添加: \(imageInfo)")
-            }
-        } else {
-            logger.debug("跳过重复图片内容")
-        }
-    }
-    
-    // 从数据头部检测图片格式
-    private func detectImageFormatFromHeader(_ data: Data) -> String {
-        guard data.count >= 4 else { return "未知格式" }
-        
-        let bytes = Array(data.prefix(16))
-        
-        // PNG
-        if bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
-            return "PNG"
-        }
-        
-        // JPEG
-        if bytes.starts(with: [0xFF, 0xD8]) {
-            return "JPEG"
-        }
-        
-        // GIF
-        if bytes.starts(with: [0x47, 0x49, 0x46]) {
-            return "GIF"
-        }
-        
-        // BMP
-        if bytes.starts(with: [0x42, 0x4D]) {
-            return "BMP"
-        }
-        
-        // TIFF
-        if bytes.starts(with: [0x49, 0x49, 0x2A, 0x00]) || 
-           bytes.starts(with: [0x4D, 0x4D, 0x00, 0x2A]) {
-            return "TIFF"
-        }
-        
-        // WebP
-        if data.count >= 12 &&
-           bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) &&
-           bytes[8...11] == [0x57, 0x45, 0x42, 0x50] {
-            return "WebP"
-        }
-        
-        // PDF
-        if bytes.starts(with: [0x25, 0x50, 0x44, 0x46]) {
-            return "PDF"
-        }
-        
-        // HEIF/HEIC
-        if data.count >= 12 &&
-           bytes[4...7] == [0x66, 0x74, 0x79, 0x70] {
-            if let typeString = String(data: data.subdata(in: 8..<12), encoding: .ascii) {
-                if typeString.contains("heic") || typeString.contains("heix") {
-                    return "HEIC"
-                } else if typeString.contains("heif") || typeString.contains("mif1") {
-                    return "HEIF"
-                } else if typeString.contains("avif") {
-                    return "AVIF"
-                }
-            }
-            return "HEIF系列"
-        }
-        
-        // SVG
-        if let headerString = String(data: data.prefix(100), encoding: .utf8) {
-            if headerString.contains("<svg") || headerString.contains("<?xml") {
-                return "SVG"
-            }
-        }
-        
-        return "未知格式"
-    }
-    
-    // 验证图片数据头部 - 更宽松的验证
-    private func isValidImageDataHeader(_ header: Data, format: String) -> Bool {
-        guard header.count >= 4 else { return false }
-        
-        let bytes = Array(header)
-        let formatUpper = format.uppercased()
-        
-        switch formatUpper {
-        case "PNG":
-            return bytes.starts(with: [0x89, 0x50, 0x4E, 0x47])
-        case "JPEG", "JPG":
-            return bytes.starts(with: [0xFF, 0xD8, 0xFF]) || bytes.starts(with: [0xFF, 0xD8])
-        case "GIF":
-            return bytes.starts(with: [0x47, 0x49, 0x46]) || 
-                   String(data: header.prefix(6), encoding: .ascii)?.hasPrefix("GIF") == true
-        case "TIFF", "TIF":
-            return bytes.starts(with: [0x49, 0x49, 0x2A, 0x00]) || // Little endian
-                   bytes.starts(with: [0x4D, 0x4D, 0x00, 0x2A])   // Big endian
-        case "BMP":
-            return bytes.starts(with: [0x42, 0x4D])
-        case "WEBP":
-            return header.count >= 12 && 
-                   bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) &&
-                   bytes[8...11] == [0x57, 0x45, 0x42, 0x50]
-        case "HEIC", "HEIF":
-            // HEIF/HEIC 有复杂的头部结构，进行基本检查
-            return header.count >= 12 &&
-                   (bytes[4...7] == [0x66, 0x74, 0x79, 0x70] || // "ftyp"
-                    String(data: header.subdata(in: 4..<8), encoding: .ascii) == "ftyp")
-        case "PDF":
-            return bytes.starts(with: [0x25, 0x50, 0x44, 0x46]) || // "%PDF"
-                   String(data: header.prefix(4), encoding: .ascii) == "%PDF"
-        case "SVG":
-            let headerString = String(data: header, encoding: .utf8) ?? ""
-            return headerString.contains("<svg") || headerString.contains("<?xml")
-        case "AVIF":
-            return header.count >= 12 &&
-                   bytes[4...7] == [0x66, 0x74, 0x79, 0x70] && // "ftyp"
-                   bytes[8...11] == [0x61, 0x76, 0x69, 0x66] // "avif"
-        case "通用图片", "自定义图片格式":
-            // 对于通用或自定义格式，尝试多种常见头部
-            return isCommonImageFormat(bytes)
-        default:
-            // 对于未知格式，进行通用检查
-            return isCommonImageFormat(bytes)
-        }
-    }
-    
-    // 检查是否为常见图片格式
-    private func isCommonImageFormat(_ bytes: [UInt8]) -> Bool {
-        guard bytes.count >= 4 else { return false }
-        
-        // PNG
-        if bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return true }
-        
-        // JPEG
-        if bytes.starts(with: [0xFF, 0xD8]) { return true }
-        
-        // GIF
-        if bytes.starts(with: [0x47, 0x49, 0x46]) { return true }
-        
-        // BMP
-        if bytes.starts(with: [0x42, 0x4D]) { return true }
-        
-        // TIFF
-        if bytes.starts(with: [0x49, 0x49, 0x2A, 0x00]) || 
-           bytes.starts(with: [0x4D, 0x4D, 0x00, 0x2A]) { return true }
-        
-        // WebP
-        if bytes.count >= 12 &&
-           bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) &&
-           bytes[8...11] == [0x57, 0x45, 0x42, 0x50] { return true }
-        
-        // PDF
-        if bytes.starts(with: [0x25, 0x50, 0x44, 0x46]) { return true }
-        
-        // ICO
-        if bytes.starts(with: [0x00, 0x00, 0x01, 0x00]) { return true }
-        
-        return false
-    }
-    
-    // 尝试修复损坏的图片数据 - 增强版
-    private func attemptDataRepair(_ data: Data, format: String) -> Data? {
-        let formatUpper = format.uppercased()
-        let bytes = Array(data)
-        
-        // 对于 JPEG，尝试修复头部
-        if formatUpper.contains("JPEG") || formatUpper.contains("JPG") {
-            // 如果不是以 FF D8 开头，尝试找到正确的开始位置
-            if !bytes.starts(with: [0xFF, 0xD8]) {
-                if let startIndex = findJPEGStart(in: bytes) {
-                    let repairedData = Data(bytes.dropFirst(startIndex))
-                    logger.info("修复了 JPEG 数据开头，移除了 \(startIndex) 字节")
-                    return repairedData
-                }
-            }
-            
-            // 尝试添加标准 JPEG 头部（如果数据看起来像是丢失了头部）
-            if bytes.count > 100 && bytes.contains(0xFF) {
-                let jpegHeader: [UInt8] = [0xFF, 0xD8, 0xFF, 0xE0]
-                var repairedBytes = jpegHeader
-                repairedBytes.append(contentsOf: bytes)
-                logger.info("尝试为 JPEG 添加标准头部")
-                return Data(repairedBytes)
-            }
-        }
-        
-        // 对于 PNG，尝试修复头部
-        if formatUpper == "PNG" {
-            if !bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
-                if let startIndex = findPNGStart(in: bytes) {
-                    let repairedData = Data(bytes.dropFirst(startIndex))
-                    logger.info("修复了 PNG 数据开头，移除了 \(startIndex) 字节")
-                    return repairedData
-                }
-            }
-        }
-        
-        // 对于 GIF，尝试修复头部
-        if formatUpper == "GIF" {
-            if !bytes.starts(with: [0x47, 0x49, 0x46]) {
-                if let startIndex = findGIFStart(in: bytes) {
-                    let repairedData = Data(bytes.dropFirst(startIndex))
-                    logger.info("修复了 GIF 数据开头，移除了 \(startIndex) 字节")
-                    return repairedData
-                }
-            }
-        }
-        
-        // 通用修复：尝试移除前面的无效字节
-        if bytes.count > 20 {
-            for i in 1..<min(100, bytes.count - 10) {
-                let testData = Data(bytes.dropFirst(i))
-                if NSImage(data: testData) != nil {
-                    logger.info("通用修复成功，移除了 \(i) 字节")
-                    return testData
-                }
-            }
-        }
-        
-        return nil
-    }
-    
-    // 查找 JPEG 开始位置
-    private func findJPEGStart(in bytes: [UInt8]) -> Int? {
-        for i in 0..<min(bytes.count - 1, 1000) {
-            if bytes[i] == 0xFF && bytes[i + 1] == 0xD8 {
-                return i
-            }
-        }
-        return nil
-    }
-    
-    // 查找 PNG 开始位置
-    private func findPNGStart(in bytes: [UInt8]) -> Int? {
-        for i in 0..<min(bytes.count - 3, 1000) {
-            if bytes[i] == 0x89 && bytes[i + 1] == 0x50 && 
-               bytes[i + 2] == 0x4E && bytes[i + 3] == 0x47 {
-                return i
-            }
-        }
-        return nil
-    }
-    
-    // 查找 GIF 开始位置
-    private func findGIFStart(in bytes: [UInt8]) -> Int? {
-        for i in 0..<min(bytes.count - 2, 1000) {
-            if bytes[i] == 0x47 && bytes[i + 1] == 0x49 && bytes[i + 2] == 0x46 {
-                return i
-            }
-        }
-        return nil
-    }
-    
-    // 预处理图片数据，确保数据稳定性
-    private func preprocessImageData(_ data: Data, format: String) -> Data {
-        // 对于常见的位图格式，确保数据完整性
-        guard format != "SVG" else { return data }
-        
-        // 验证图片数据的完整性
-        guard let nsImage = NSImage(data: data),
-              nsImage.isValid,
-              nsImage.size.width > 0,
-              nsImage.size.height > 0 else {
-            #if DEBUG
-            logger.warning("图片数据验证失败，返回原始数据")
-            #endif
-            return data
-        }
-        
-        // 对于 TIFF 格式，转换为更稳定的 PNG 格式
-        if format == "TIFF" {
-            if let tiffData = nsImage.tiffRepresentation,
-               let bitmapRep = NSBitmapImageRep(data: tiffData),
-               let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-                #if DEBUG
-                logger.info("TIFF 已转换为 PNG 格式")
-                #endif
-                return pngData
-            }
-        }
-        
-        // 对于过大的图片，进行适度压缩但保持质量
-        if data.count > 5 * 1024 * 1024 { // 5MB
-            if let optimizedData = optimizeImageForStability(nsImage, originalData: data) {
-                #if DEBUG
-                logger.info("大图片已优化处理")
-                #endif
-                return optimizedData
-            }
-        }
-        
-        return data
-    }
-    
-    // 专门用于稳定性的图片优化
-    private func optimizeImageForStability(_ image: NSImage, originalData: Data) -> Data? {
-        // 计算合适的尺寸，不要过度压缩
-        let maxDimension: CGFloat = 1200 // 适中的尺寸限制
-        let currentSize = image.size
-        
-        // 如果图片已经很小，直接返回原数据
-        if currentSize.width <= maxDimension && currentSize.height <= maxDimension {
-            return originalData
-        }
-        
-        // 计算新尺寸，保持宽高比
-        let scale = min(maxDimension / currentSize.width, maxDimension / currentSize.height)
-        let newSize = NSSize(width: currentSize.width * scale, height: currentSize.height * scale)
-        
-        // 创建新的图片
-        let newImage = NSImage(size: newSize)
-        newImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: newSize), 
-                  from: NSRect(origin: .zero, size: currentSize), 
-                  operation: .copy, 
-                  fraction: 1.0)
-        newImage.unlockFocus()
-        
-        // 转换为 PNG 格式，确保质量和兼容性
-        if let tiffData = newImage.tiffRepresentation,
-           let bitmapRep = NSBitmapImageRep(data: tiffData),
-           let pngData = bitmapRep.representation(using: .png, properties: [:]) {
-            return pngData
-        }
-        
-        return originalData
-    }
-    
     private func handleImageFileContent(_ fileURLs: [URL]) {
         logger.info("处理图片文件内容: \(fileURLs.count) 个图片文件")
         
@@ -1817,40 +1291,6 @@ class ClipboardManager: ObservableObject {
         }
     }
     
-    // MARK: - 图片验证优化
-    
-    private func isValidImageDataCached(_ data: Data) -> Bool {
-        let dataHash = String(data.hashValue)
-        let cacheKey = NSString(string: dataHash)
-        
-        // 检查缓存
-        if let cachedResult = imageValidationCache.object(forKey: cacheKey) {
-            return cachedResult.boolValue
-        }
-        
-        // 快速头部验证
-        let isValid = isValidImageDataQuick(data)
-        
-        // 缓存结果
-        imageValidationCache.setObject(NSNumber(value: isValid), forKey: cacheKey)
-        
-        return isValid
-    }
-    
-    private func isValidImageDataQuick(_ data: Data) -> Bool {
-        guard data.count >= 8 else { return false }
-        
-        let bytes = Array(data.prefix(16))
-        
-        // 快速检查常见格式
-        return bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) || // PNG
-               bytes.starts(with: [0xFF, 0xD8]) || // JPEG
-               bytes.starts(with: [0x47, 0x49, 0x46]) || // GIF
-               bytes.starts(with: [0x42, 0x4D]) || // BMP
-               (bytes.count >= 12 && bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) && 
-                bytes[8...11] == [0x57, 0x45, 0x42, 0x50]) // WebP
-    }
-    
     // MARK: - 智能去重和内容过滤
     
     private func isDuplicateContent(_ content: String, type: ClipboardItemType) -> Bool {
@@ -1880,173 +1320,10 @@ class ClipboardManager: ObservableObject {
         return false
     }
     
-    // MARK: - 图片优化处理
-    
-    private func optimizeImageData(_ image: NSImage, originalData: Data) -> Data {
-        let targetSize = CGFloat(settingsManager.maxImageSize)
-        let compressionQuality = settingsManager.compressionQuality
-        
-        // 如果原始图片已经合适，直接返回
-        if image.size.width <= targetSize && image.size.height <= targetSize {
-            return originalData
-        }
-        
-        // 计算新尺寸
-        let aspectRatio = image.size.width / image.size.height
-        var newSize: NSSize
-        
-        if aspectRatio > 1 {
-            newSize = NSSize(width: targetSize, height: targetSize / aspectRatio)
-        } else {
-            newSize = NSSize(width: targetSize * aspectRatio, height: targetSize)
-        }
-        
-        // 创建压缩后的图片
-        let resizedImage = NSImage(size: newSize)
-        resizedImage.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: newSize))
-        resizedImage.unlockFocus()
-        
-        // 转换为 JPEG 格式以减小文件大小
-        if let tiffData = resizedImage.tiffRepresentation,
-           let bitmapImage = NSBitmapImageRep(data: tiffData),
-           let jpegData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality]) {
-            
-            let originalSize = ByteCountFormatter.string(fromByteCount: Int64(originalData.count), countStyle: .file)
-            let newSize = ByteCountFormatter.string(fromByteCount: Int64(jpegData.count), countStyle: .file)
-            logger.info("图片已优化: \(originalSize) -> \(newSize)")
-            
-            return jpegData
-        }
-        
-        return originalData
-    }
-    
     // MARK: - 添加剪贴板项目的方法
     
     private func addClipboardItemWithData(content: String, type: ClipboardItemType, data: Data) {
         addClipboardItem(content: content, type: type, data: data)
-    }
-    
-    private func handleFileContentSync(_ pasteboard: NSPasteboard) -> Bool {
-        guard let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !fileURLs.isEmpty else {
-            return false
-        }
-        
-        // 验证文件存在性
-        let validFiles = fileURLs.filter { url in
-            FileManager.default.fileExists(atPath: url.path)
-        }
-        
-        guard !validFiles.isEmpty else {
-            return false
-        }
-        
-        // 使用新的文件类型分类器
-        var categorizedFiles: [String: [URL]] = [:]
-        var fileInfos: [[String: Any]] = []
-        
-        for url in validFiles {
-            let pathExtension = url.pathExtension.lowercased()
-            let fileClassification = FileTypeClassifier.classifyFileType(fileExtension: pathExtension)
-            let category = fileClassification.category
-            
-            // 按类别分组
-            if categorizedFiles[category] == nil {
-                categorizedFiles[category] = []
-            }
-            categorizedFiles[category]?.append(url)
-            
-            // 创建文件信息
-            let fileInfo: [String: Any] = [
-                "name": url.lastPathComponent,
-                "path": url.path,
-                "category": category,
-                "icon": fileClassification.icon,
-                "description": fileClassification.description,
-                "itemType": fileClassification.itemType.rawValue
-            ]
-            fileInfos.append(fileInfo)
-        }
-        
-        // 生成描述
-        let totalFiles = validFiles.count
-        let contentTitle: String
-        let itemType: ClipboardItemType
-        
-        if totalFiles == 1 {
-            let singleFile = validFiles.first!
-            let classification = FileTypeClassifier.classifyFileType(fileExtension: singleFile.pathExtension.lowercased())
-            contentTitle = "\(classification.category): \(singleFile.lastPathComponent)"
-            itemType = classification.itemType
-        } else {
-            let fileTypes = Set(validFiles.map { url in
-                FileTypeClassifier.classifyFileType(fileExtension: url.pathExtension.lowercased()).itemType
-            })
-            
-            let categories = categorizedFiles.keys.sorted()
-            let categoryDescriptions: [String] = categories.compactMap { category in
-                guard let files = categorizedFiles[category] else { return nil }
-                let count = files.count
-                return "\(category)(\(count))"
-            }
-            contentTitle = "文件 (\(totalFiles)个): \(categoryDescriptions.joined(separator: ", "))"
-            
-            // 如果所有文件都是同一类型，使用该类型；否则使用通用的 .file 类型
-            itemType = fileTypes.count == 1 ? (fileTypes.first ?? .file) : .file
-        }
-        
-        do {
-            let jsonData = try JSONSerialization.data(withJSONObject: fileInfos)
-            addClipboardItem(content: contentTitle, type: itemType, data: jsonData)
-            print("文件内容已立即添加: \(contentTitle)")
-            return true
-        } catch {
-            // 备用方案：只保存文件路径
-            let filePaths = validFiles.map { $0.path }.joined(separator: "\n")
-            addClipboardItem(content: contentTitle, type: itemType, data: filePaths.data(using: .utf8))
-            print("文件内容已添加（简化版）: \(contentTitle)")
-            return true
-        }
-    }
-    
-    @MainActor
-    private func handleImageContent(_ pasteboard: NSPasteboard) async {
-        var imageData: Data?
-        var hasImage = false
-        
-        // 按优先级检查图片格式
-        let imageTypes: [(NSPasteboard.PasteboardType, String)] = [
-            (.png, "PNG"),
-            (.tiff, "TIFF"),
-            (NSPasteboard.PasteboardType("public.jpeg"), "JPEG")
-        ]
-        
-        for (type, format) in imageTypes {
-            if let data = pasteboard.data(forType: type) {
-                imageData = data
-                hasImage = true
-                print("检测到 \(format) 格式图片，大小: \(data.count / 1024)KB")
-                break
-            }
-        }
-        
-        if hasImage, let imageData = imageData {
-            // 快速检查图片是否过大
-            guard Int64(imageData.count) < maxClipboardImageBytes else {
-                print("图片过大 (\(imageData.count / 1024 / 1024)MB)，已跳过")
-                return
-            }
-            
-            do {
-                let optimizedData = try await optimizeImageDataAsync(imageData)
-                addClipboardItem(content: "Image", type: .image, data: optimizedData)
-            } catch {
-                print("图片处理失败: \(error.localizedDescription)")
-                // 使用原始数据作为备用
-                addClipboardItem(content: "Image", type: .image, data: imageData)
-            }
-        }
     }
     
     private func addClipboardItem(
@@ -2062,7 +1339,7 @@ class ClipboardManager: ObservableObject {
         }
         
         // 限制内容长度以防止内存问题
-        let maxContentLength = 10000
+        let maxContentLength = ClipboardTextSanitizer.maxStoredCharacters
         let truncatedContent = content.count > maxContentLength ? String(content.prefix(maxContentLength)) + "..." : content
 
         let fingerprintContent = (type == .text || type == .code) ? content : truncatedContent
@@ -2656,18 +1933,6 @@ class ClipboardManager: ObservableObject {
         return removedCount
     }
     
-    private func clearCache() {
-        do {
-            let cacheFiles = try FileManager.default.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)
-            for file in cacheFiles {
-                try FileManager.default.removeItem(at: file)
-            }
-            print("缓存已清理")
-        } catch {
-            print("Error occurred")
-        }
-    }
-    
     private func loadClipboardItems() {
         var loadedItems = store.loadItems()
         var requiresFingerprintPersistence = loadedItems.contains { $0.fingerprint == nil }
@@ -2832,136 +2097,6 @@ class ClipboardManager: ObservableObject {
             }
         )
         knownFingerprints = Set(itemFingerprints.values)
-        recentHashes = knownFingerprints
-    }
-    
-    private func optimizeImageDataAsync(_ data: Data) async throws -> Data {
-        return try await withCheckedThrowingContinuation { continuation in
-            Task.detached(priority: .userInitiated) { [weak self] in
-                guard let self = self else { 
-                    continuation.resume(returning: data)
-                    return
-                }
-                
-                do {
-                    // 快速检查图片大小，避免不必要的处理
-                    let fileSizeKB = data.count / 1024
-                    if fileSizeKB < 100 { // 小于100KB的图片直接返回
-                        continuation.resume(returning: data)
-                        return
-                    }
-                    
-                    guard let image = NSImage(data: data) else {
-                        throw ClipboardError.imageProcessingFailed
-                    }
-                    
-                    // 调整图片大小（使用设置管理器）
-                    let targetSize = self.calculateTargetSize(image.size, maxSize: CGFloat(self.maxImageSize))
-                    
-                    // 如果图片已经很小，直接返回原数据
-                    if targetSize.width >= image.size.width && targetSize.height >= image.size.height {
-                        continuation.resume(returning: data)
-                        return
-                    }
-                    
-                    // 创建优化的图片
-                    guard let resizedImage = self.resizeImage(image, to: targetSize) else {
-                        continuation.resume(returning: data)
-                        return
-                    }
-                    
-                    // 生成优化的图片数据（使用设置管理器）
-                    guard let tiffData = resizedImage.tiffRepresentation,
-                          let bitmapRep = NSBitmapImageRep(data: tiffData),
-                          let pngData = bitmapRep.representation(using: .png, properties: [.compressionFactor: self.settingsManager.compressionQuality]) else {
-                        continuation.resume(returning: data)
-                        return
-                    }
-                    
-                    // 只在优化后有显著大小改善时才使用优化后的数据
-                    if pngData.count < Int(Double(data.count) * 0.8) {
-                        await self.cacheImageData(pngData)
-                        continuation.resume(returning: pngData)
-                    } else {
-                        continuation.resume(returning: data)
-                    }
-                    
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-    
-    private func cacheImageData(_ data: Data) async {
-        let cacheFileName = "\(UUID().uuidString).png"
-        let cacheURL = cacheDirectory.appendingPathComponent(cacheFileName)
-        
-        do {
-            try data.write(to: cacheURL)
-            print("图片已缓存: \(cacheFileName)")
-        } catch {
-            print("Error occurred")
-        }
-    }
-    
-    private func calculateTargetSize(_ originalSize: NSSize, maxSize: CGFloat) -> NSSize {
-        if originalSize.width <= maxSize && originalSize.height <= maxSize {
-            return originalSize
-        }
-        
-        let ratio = min(maxSize / originalSize.width, maxSize / originalSize.height)
-        return NSSize(width: originalSize.width * ratio, height: originalSize.height * ratio)
-    }
-    
-    private func resizeImage(_ image: NSImage, to size: NSSize) -> NSImage? {
-        // 如果目标尺寸与原图相同，直接返回原图
-        if size.width == image.size.width && size.height == image.size.height {
-            return image
-        }
-        
-        // 使用更高效的图片处理方式
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(size.width),
-            pixelsHigh: Int(size.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        )
-        
-        guard let bitmapRep = rep else {
-            logger.error("无法创建 bitmap representation")
-            return nil
-        }
-        
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        
-        guard let context = NSGraphicsContext(bitmapImageRep: bitmapRep) else {
-            logger.error("无法创建图形上下文")
-            return nil
-        }
-        
-        NSGraphicsContext.current = context
-        context.imageInterpolation = .high
-        
-        // 使用自动释放池处理图片绘制
-        autoreleasepool {
-            image.draw(in: NSRect(origin: .zero, size: size), 
-                      from: NSRect(origin: .zero, size: image.size), 
-                      operation: .copy, 
-                      fraction: 1.0)
-        }
-        
-        let newImage = NSImage(size: size)
-        newImage.addRepresentation(bitmapRep)
-        
-        return newImage
     }
     
     // MARK: - 文件处理辅助方法
@@ -3128,115 +2263,35 @@ class ClipboardManager: ObservableObject {
         ]
     }
     
-    // MARK: - 智能缓存管理
-    
-    private func setupSmartCacheCleanup() {
-        // 使用更长的清理间隔，减少CPU消耗
-        let adaptiveCleanupInterval = cacheCleanupInterval * 2 // 从10分钟调整为20分钟
-        cacheCleanupTimer = Timer.scheduledTimer(withTimeInterval: adaptiveCleanupInterval, repeats: true) { [weak self] _ in
-            self?.performAdaptiveCacheCleanup()
-        }
-        
-        logger.info("智能缓存清理已启动，间隔: \(adaptiveCleanupInterval)秒（自适应模式）")
-    }
-    
-    private func performAdaptiveCacheCleanup() {
-        // 根据用户活动状态决定是否执行清理
-        let inactivityDuration = activityMonitor.getInactivityDuration()
-        
-        // 如果用户长时间不活跃，减少清理频率
-        if inactivityDuration > 1800 { // 30分钟不活跃
-            logger.debug("用户长时间不活跃，跳过缓存清理")
-            return
-        }
-        
-        performSmartCacheCleanup()
-    }
-    
-    private func performSmartCacheCleanup() {
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self = self else { return }
-            
-            let now = Date()
-            var cleanedCount = 0
-            
-            // 清理过期的哈希记录
-            if now.timeIntervalSince(self.lastHashCleanup) > 7200 { // 2小时清理一次
-                let oldHashCount = self.recentHashes.count
-                self.recentHashes.removeAll()
-                self.lastHashCleanup = now
-                cleanedCount += oldHashCount
-            }
-            
-            // 智能清理图片缓存
-            self.cleanupImageCaches()
-            
-            // 清理验证缓存
-            self.cleanupValidationCache()
-            
-            #if DEBUG
-            if cleanedCount > 0 {
-                DispatchQueue.main.async {
-                    self.logger.debug("智能缓存清理完成，清理了 \(cleanedCount) 项")
-                }
-            }
-            #endif
-        }
-    }
-    
-    private func cleanupImageCaches() {
-        // 检查当前缓存使用情况
-        let currentCacheCount = imageCache.countLimit
-        let maxMemoryLimit = imageCache.totalCostLimit
-        
-        // 获取系统内存压力指示
-        let memoryPressure = ProcessInfo.processInfo.thermalState
-        
-        // 根据系统状态调整清理策略
-        switch memoryPressure {
-        case .critical, .serious:
-            // 内存压力大时，清空所有缓存
-            imageCache.removeAllObjects()
-            imageValidationCache.removeAllObjects()
-            logger.warning("检测到内存压力，清空所有图片缓存")
-        case .fair:
-            // 中等压力时，减少缓存限制
-            imageCache.countLimit = max(currentCacheCount / 2, 5)
-            imageCache.totalCostLimit = max(maxMemoryLimit / 2, 10 * 1024 * 1024)
-        default:
-            // 正常情况下保持当前设置
-            break
-        }
-    }
-    
-    private func cleanupValidationCache() {
-        // 定期清空验证缓存，避免无限增长
-        if imageValidationCache.countLimit > 200 {
-            // 只清理一半，保留最近使用的缓存
-            imageValidationCache.countLimit = 100
-        }
-    }
-    
-    // MARK: - 性能优化方法
-    
+    // MARK: - 内存压力管理
+
     private func setupMemoryPressureMonitoring() {
-        // macOS 使用不同的内存压力监听方式
-        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: DispatchQueue.global())
+        guard memoryPressureSource == nil else { return }
+
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
         source.setEventHandler { [weak self] in
-            DispatchQueue.main.async {
-                self?.handleMemoryWarning()
-            }
+            guard let self, let source = self.memoryPressureSource else { return }
+            self.handleMemoryPressure(source.data)
         }
+        memoryPressureSource = source
         source.resume()
     }
-    
-    private func handleMemoryWarning() {
-        logger.warning("收到内存警告，开始清理缓存")
-        
-        // 立即执行智能缓存清理
-        performSmartCacheCleanup()
-        
-        logger.info("内存清理完成")
+
+    private func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) {
+        ImageCacheManager.shared.clearCache()
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ClearImagePreviewCache"),
+            object: nil
+        )
+
+        if event.contains(.critical) {
+            logger.warning("收到严重内存压力，已释放全部图片预览缓存")
+        } else {
+            logger.info("收到内存压力警告，已释放图片预览缓存")
+        }
     }
     
     // 快速计算内容哈希用于去重
@@ -3447,49 +2502,6 @@ class ClipboardManager: ObservableObject {
         score += timeScore
         
         return score
-    }
-    
-    // MARK: - 图片优化处理
-    
-    private func optimizeImage(_ data: Data) -> Data? {
-        guard data.count > maxImageSize else { return data }
-        
-        guard let image = NSImage(data: data) else { return nil }
-        
-        // 计算压缩比例
-        let compressionRatio = Double(maxImageSize) / Double(data.count)
-        let targetSize = NSSize(
-            width: image.size.width * sqrt(compressionRatio),
-            height: image.size.height * sqrt(compressionRatio)
-        )
-        
-        return resizeImageToData(image, to: targetSize)
-    }
-    
-    private func resizeImageToData(_ image: NSImage, to targetSize: NSSize) -> Data? {
-        let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(targetSize.width),
-            pixelsHigh: Int(targetSize.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        )
-        
-        guard let bitmapRep = rep else { return nil }
-        
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmapRep)
-        
-        image.draw(in: NSRect(origin: .zero, size: targetSize))
-        
-        NSGraphicsContext.restoreGraphicsState()
-        
-        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
     }
     
     // MARK: - 智能内容分类

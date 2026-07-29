@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-enum ClipboardItemType: String, Codable {
+enum ClipboardItemType: String, Codable, CaseIterable {
     case text = "text"
     case image = "image"
     case file = "file"
@@ -62,7 +62,16 @@ extension ClipboardItemType {
 }
 
 enum ClipboardTextSanitizer {
+    static let maxProcessingCharacters = 256 * 1024
+    static let maxStoredCharacters = 10_000
     private static let officeVMLRulePattern = #"(?i)(?:[a-z]\\?:\*|\.[a-z][\w-]*)\s*\{\s*behavior\s*:\s*url\([^)]*#default#VML[^)]*\)\s*;?\s*\}"#
+
+    static func cleanForHistory(_ source: String) -> String {
+        let boundedSource = prefix(source, limit: maxProcessingCharacters).value
+        let cleaned = clean(boundedSource)
+        let boundedResult = prefix(cleaned, limit: maxStoredCharacters)
+        return boundedResult.wasTruncated ? boundedResult.value + "..." : boundedResult.value
+    }
 
     static func clean(_ source: String) -> String {
         let normalizedScalars = source.unicodeScalars.filter { scalar in
@@ -92,6 +101,19 @@ enum ClipboardTextSanitizer {
         )
 
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func prefix(_ source: String, limit: Int) -> (value: String, wasTruncated: Bool) {
+        guard let endIndex = source.index(
+            source.startIndex,
+            offsetBy: limit,
+            limitedBy: source.endIndex
+        ) else {
+            return (source, false)
+        }
+
+        let wasTruncated = endIndex != source.endIndex
+        return (wasTruncated ? String(source[..<endIndex]) : source, wasTruncated)
     }
 }
 

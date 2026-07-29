@@ -291,6 +291,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 当最后一个窗口关闭时不退出应用
         return false
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        SettingsManager.shared.flushPendingSave()
+    }
     
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         // 防止通过文件打开创建新窗口

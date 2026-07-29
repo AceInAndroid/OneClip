@@ -43,7 +43,7 @@ class UserActivityMonitor {
     private var globalEventMonitor: Any?
     
     // 监控配置
-    private let checkInterval: TimeInterval = 1.0  // 每秒检查一次
+    private let checkInterval: TimeInterval = 5.0  // 降低后台唤醒频率
     private let inactiveThreshold: TimeInterval = 60.0  // 1分钟无活动视为不活跃
     private let sleepThreshold: TimeInterval = 300.0   // 5分钟无活动视为深度休眠
     
@@ -113,7 +113,9 @@ class UserActivityMonitor {
     
     private func setupActivityMonitoring() {
         // 监听系统事件
-        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] _ in
+        // 鼠标移动事件频率很高，会让常驻应用持续唤醒。点击和键盘事件足以
+        // 及时恢复活跃状态，应用自身的剪贴板变化也会主动调用 updateActivity()。
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] _ in
             self?.updateActivity()
         }
         

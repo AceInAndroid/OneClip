@@ -208,6 +208,61 @@ struct OneClipTests {
         #expect(ClipboardTextSanitizer.clean(source) == "系统架构图（图片放大后清晰）")
     }
 
+    @Test func largeClipboardTextIsBoundedForHistoryProcessing() {
+        let source = String(repeating: "a", count: ClipboardTextSanitizer.maxProcessingCharacters + 50_000)
+        let cleaned = ClipboardTextSanitizer.cleanForHistory(source)
+
+        #expect(cleaned.count == ClipboardTextSanitizer.maxStoredCharacters + 3)
+        #expect(cleaned.hasSuffix("..."))
+    }
+
+    @Test func clipboardListSnapshotFiltersAndCountsInOnePass() {
+        let textItem = ClipboardItem(
+            id: UUID(),
+            content: "Alpha note",
+            type: .text,
+            timestamp: Date(timeIntervalSince1970: 100),
+            isFavorite: true
+        )
+        let imageItem = ClipboardItem(
+            id: UUID(),
+            content: "Alpha image",
+            type: .image,
+            timestamp: Date(timeIntervalSince1970: 200)
+        )
+        let otherTextItem = ClipboardItem(
+            id: UUID(),
+            content: "Beta note",
+            type: .text,
+            timestamp: Date(timeIntervalSince1970: 300)
+        )
+
+        let snapshot = ClipboardListSnapshot.make(
+            historyItems: [otherTextItem, imageItem, textItem],
+            favoriteItems: [],
+            selectedType: .text,
+            favoritesOnly: false,
+            query: "alpha"
+        )
+
+        #expect(snapshot.items.map(\.id) == [textItem.id])
+        #expect(snapshot.indexedItems.map(\.index) == [0])
+        #expect(snapshot.typeCounts[.text] == 2)
+        #expect(snapshot.typeCounts[.image] == 1)
+        #expect(snapshot.favoriteCount == 1)
+    }
+
+    @Test func debouncedActionSchedulerFlushesOnlyLatestAction() {
+        let scheduler = DebouncedActionScheduler(delay: 60, queue: .main)
+        var values: [Int] = []
+
+        scheduler.schedule { values.append(1) }
+        scheduler.schedule { values.append(2) }
+        scheduler.flush()
+
+        #expect(values == [2])
+    }
+
     @Test func spreadsheetRowsAndColumnsRemainPlainText() {
         let source = "名称\t数量\r\nPasteLight\t2"
 

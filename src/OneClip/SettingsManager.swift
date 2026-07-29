@@ -157,6 +157,62 @@ struct AppSettings: Codable {
     }
 }
 
+final class DebouncedActionScheduler: @unchecked Sendable {
+    private let delay: TimeInterval
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var pendingAction: (() -> Void)?
+    private var workItem: DispatchWorkItem?
+
+    init(delay: TimeInterval, queue: DispatchQueue) {
+        self.delay = delay
+        self.queue = queue
+    }
+
+    func schedule(_ action: @escaping () -> Void) {
+        lock.lock()
+        generation &+= 1
+        let scheduledGeneration = generation
+        pendingAction = action
+        workItem?.cancel()
+
+        let item = DispatchWorkItem { [weak self] in
+            self?.execute(generation: scheduledGeneration)
+        }
+        workItem = item
+        lock.unlock()
+
+        queue.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    func flush() {
+        lock.lock()
+        generation &+= 1
+        workItem?.cancel()
+        workItem = nil
+        let action = pendingAction
+        pendingAction = nil
+        lock.unlock()
+
+        action?()
+    }
+
+    private func execute(generation scheduledGeneration: UInt64) {
+        lock.lock()
+        guard generation == scheduledGeneration else {
+            lock.unlock()
+            return
+        }
+        let action = pendingAction
+        pendingAction = nil
+        workItem = nil
+        lock.unlock()
+
+        action?()
+    }
+}
+
 /// 设置管理器 - 处理所有应用设置的读取、保存和管理
 class SettingsManager: ObservableObject {
     static let shared = SettingsManager()
@@ -284,6 +340,7 @@ class SettingsManager: ObservableObject {
     // MARK: - 私有属性
     private let logger = Logger.shared
     private let settingsURL: URL
+    private let saveScheduler = DebouncedActionScheduler(delay: 0.2, queue: .main)
     
     // MARK: - 初始化
     private init() {
@@ -517,8 +574,18 @@ class SettingsManager: ObservableObject {
         }
     }
     
-    /// 保存设置
+    /// 合并短时间内的连续修改，滑块拖动时只在停止后保存一次。
     private func saveSettings() {
+        saveScheduler.schedule { [weak self] in
+            self?.persistSettingsNow()
+        }
+    }
+
+    func flushPendingSave() {
+        saveScheduler.flush()
+    }
+
+    private func persistSettingsNow() {
         var settings = AppSettings()
         settings.showInDock = showInDock
         settings.enableHistoryPersistence = enableHistoryPersistence
@@ -543,7 +610,7 @@ class SettingsManager: ObservableObject {
         
         do {
             let data = try JSONEncoder().encode(settings)
-            try data.write(to: settingsURL)
+            try data.write(to: settingsURL, options: .atomic)
             logger.info("Settings saved successfully")
         } catch {
             logger.error("Failed to save settings: \(error)")
