@@ -376,6 +376,58 @@ struct OneClipTests {
         #expect(streamed == inMemory)
     }
 
+    @Test func lightweightImageFingerprintMatchesFileWithoutReadingWholePayload() throws {
+        let byteCount = ClipboardItemLightweightFingerprint.maximumSampledByteCount * 4 + 137
+        let data = Data((0..<byteCount).map { UInt8($0 % 251) })
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try data.write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let inMemory = ClipboardItemLightweightFingerprint.make(imageData: data)
+        let fileBacked = try #require(ClipboardItemLightweightFingerprint.make(imageAt: fileURL))
+
+        #expect(inMemory == fileBacked)
+        #expect(ClipboardItemLightweightFingerprint.maximumSampledByteCount == 192 * 1024)
+    }
+
+    @Test func lightweightImageFingerprintSamplesHeadMiddleAndTail() {
+        let byteCount = ClipboardItemLightweightFingerprint.maximumSampledByteCount * 4
+        let original = Data(repeating: 0x5a, count: byteCount)
+        let originalFingerprint = ClipboardItemLightweightFingerprint.make(imageData: original)
+
+        var changedHead = original
+        changedHead[0] = 0x01
+        var changedMiddle = original
+        changedMiddle[byteCount / 2] = 0x02
+        var changedTail = original
+        changedTail[byteCount - 1] = 0x03
+
+        #expect(ClipboardItemLightweightFingerprint.make(imageData: changedHead) != originalFingerprint)
+        #expect(ClipboardItemLightweightFingerprint.make(imageData: changedMiddle) != originalFingerprint)
+        #expect(ClipboardItemLightweightFingerprint.make(imageData: changedTail) != originalFingerprint)
+    }
+
+    @Test func lightweightFileFingerprintUsesStableSortedPaths() throws {
+        let first = URL(fileURLWithPath: "/tmp/PasteLight/report.pdf")
+        let second = URL(fileURLWithPath: "/tmp/PasteLight/image.png")
+        let samePaths = try #require(ClipboardItemLightweightFingerprint.make(
+            fileURLs: [first, second],
+            type: .file
+        ))
+        let reversedPaths = try #require(ClipboardItemLightweightFingerprint.make(
+            fileURLs: [second, first],
+            type: .file
+        ))
+        let differentPath = try #require(ClipboardItemLightweightFingerprint.make(
+            fileURLs: [URL(fileURLWithPath: "/tmp/PasteLight/other.pdf"), second],
+            type: .file
+        ))
+
+        #expect(samePaths == reversedPaths)
+        #expect(samePaths != differentPath)
+    }
+
     @Test func persistedFingerprintAvoidsReadingMissingFile() {
         let fingerprint = ClipboardItemFingerprint.make(
             content: "image",
@@ -420,6 +472,47 @@ struct OneClipTests {
 
         #expect(result.count == 1)
         #expect(result[0].id == favorite.id)
+    }
+
+    @Test func duplicateCopyPromotesExistingItemToTop() throws {
+        let copiedAt = Date(timeIntervalSince1970: 5_000)
+        let originalTimestamp = Date(timeIntervalSince1970: 1_000)
+        let fingerprint = ClipboardItemFingerprint.make(
+            content: "已重新写入",
+            type: .text,
+            data: nil
+        )
+        let target = ClipboardItem(
+            id: UUID(),
+            content: "已重新写入",
+            type: .text,
+            timestamp: originalTimestamp,
+            isFavorite: true,
+            fingerprint: fingerprint
+        )
+        var items = (0..<5).map { index in
+            ClipboardItem(
+                id: UUID(),
+                content: "item \(index)",
+                type: .text,
+                timestamp: Date(timeIntervalSince1970: Double(4_000 - index)),
+                fingerprint: "text:item-\(index)"
+            )
+        }
+        items.append(target)
+
+        let promoted = try #require(ClipboardHistoryOrdering.promoteExisting(
+            matching: fingerprint,
+            in: &items,
+            at: copiedAt
+        ))
+
+        #expect(items.count == 6)
+        #expect(items.first?.id == target.id)
+        #expect(promoted.id == target.id)
+        #expect(promoted.timestamp == originalTimestamp)
+        #expect(promoted.lastUsedAt == copiedAt)
+        #expect(promoted.isFavorite)
     }
 
     @Test func fingerprintMigrationPreservesStoredImageFiles() {

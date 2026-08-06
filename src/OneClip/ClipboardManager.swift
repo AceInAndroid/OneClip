@@ -193,6 +193,8 @@ class ClipboardManager: ObservableObject {
     // 去重机制优化
     private var itemFingerprints: [UUID: String] = [:]
     private var knownFingerprints: Set<String> = []
+    private var lightweightFingerprintItemIDs: [String: UUID] = [:]
+    private var isLightweightFingerprintIndexRunning = false
     private let backgroundFingerprintThreshold = 1024 * 1024
     private var isFingerprintMigrationRunning = false
     private var lastMemoryRetentionCleanup = Date.distantPast
@@ -604,6 +606,17 @@ class ClipboardManager: ObservableObject {
         let currentTime = Date()
         if currentHash == lastContentHash,
            currentTime.timeIntervalSince(lastContentTime) < duplicateTimeWindow {
+            if let rawPlainText = pasteboard.string(forType: .string) {
+                let plainText = ClipboardTextSanitizer.cleanForHistory(rawPlainText)
+                let fingerprint = ClipboardItemFingerprint.make(
+                    content: plainText,
+                    type: .text,
+                    data: nil
+                )
+                if promoteExistingItem(matching: fingerprint, at: currentTime) {
+                    logger.debug("快速重复文本已提升到历史首位")
+                }
+            }
             logger.debug("检测到重复文本，跳过处理（哈希: \(String(currentHash.prefix(8)))）")
             return
         }
@@ -1219,15 +1232,29 @@ class ClipboardManager: ObservableObject {
             let singleFile = validFiles.first!
             let classification = FileTypeClassifier.classifyFileType(fileExtension: singleFile.pathExtension.lowercased())
             let contentTitle = "\(classification.category): \(singleFile.lastPathComponent)"
+            let lightweightFingerprint = ClipboardItemLightweightFingerprint.make(
+                fileURLs: validFiles,
+                type: classification.itemType
+            )
             
             if !isDuplicateContent(contentTitle, type: classification.itemType) {
                 do {
                     let jsonData = try JSONSerialization.data(withJSONObject: fileInfos, options: .prettyPrinted)
-                    addClipboardItem(content: contentTitle, type: classification.itemType, data: jsonData)
+                    addClipboardItem(
+                        content: contentTitle,
+                        type: classification.itemType,
+                        data: jsonData,
+                        precomputedLightweightFingerprint: lightweightFingerprint
+                    )
                     logger.info("文件内容已添加: \(contentTitle)")
                 } catch {
                     let pathsText = validFiles.map { $0.path }.joined(separator: "\n")
-                    addClipboardItem(content: contentTitle, type: classification.itemType, data: pathsText.data(using: .utf8))
+                    addClipboardItem(
+                        content: contentTitle,
+                        type: classification.itemType,
+                        data: pathsText.data(using: .utf8),
+                        precomputedLightweightFingerprint: lightweightFingerprint
+                    )
                     logger.info("文件内容已添加（简化版）: \(contentTitle)")
                 }
             } else {
@@ -1260,11 +1287,20 @@ class ClipboardManager: ObservableObject {
             
             // 如果所有文件都是同一类型，使用该类型；否则使用通用的 .file 类型
             let itemType: ClipboardItemType = fileTypes.count == 1 ? fileTypes.first! : .file
+            let lightweightFingerprint = ClipboardItemLightweightFingerprint.make(
+                fileURLs: validFiles,
+                type: itemType
+            )
             
             if !isDuplicateContent(contentTitle, type: itemType) {
                 do {
                     let jsonData = try JSONSerialization.data(withJSONObject: fileInfos, options: .prettyPrinted)
-                    addClipboardItem(content: contentTitle, type: itemType, data: jsonData)
+                    addClipboardItem(
+                        content: contentTitle,
+                        type: itemType,
+                        data: jsonData,
+                        precomputedLightweightFingerprint: lightweightFingerprint
+                    )
                     logger.info("文件内容已添加: \(contentTitle)")
                 } catch {
                     logger.warning("JSON序列化失败，使用简化版本: \(error.localizedDescription)")
@@ -1277,11 +1313,21 @@ class ClipboardManager: ObservableObject {
                     }
                     
                     if let simpleJsonData = try? JSONSerialization.data(withJSONObject: simplifiedFileInfos, options: []) {
-                        addClipboardItem(content: contentTitle, type: itemType, data: simpleJsonData)
+                        addClipboardItem(
+                            content: contentTitle,
+                            type: itemType,
+                            data: simpleJsonData,
+                            precomputedLightweightFingerprint: lightweightFingerprint
+                        )
                     } else {
                         // 最后的备用方案
                         let pathsText = validFiles.map { $0.path }.joined(separator: "\n")
-                        addClipboardItem(content: contentTitle, type: itemType, data: pathsText.data(using: .utf8))
+                        addClipboardItem(
+                            content: contentTitle,
+                            type: itemType,
+                            data: pathsText.data(using: .utf8),
+                            precomputedLightweightFingerprint: lightweightFingerprint
+                        )
                     }
                     logger.info("文件内容已添加（简化版）: \(contentTitle)")
                 }
@@ -1305,7 +1351,8 @@ class ClipboardManager: ObservableObject {
         if type == .text || type == .code {
             let fingerprint = ClipboardItemFingerprint.make(content: content, type: type, data: nil)
             if knownFingerprints.contains(fingerprint) {
-                logger.debug("跳过重复内容（历史项匹配）")
+                _ = promoteExistingItem(matching: fingerprint)
+                logger.debug("重复内容已提升到历史首位（历史项匹配）")
                 return true
             }
         }
@@ -1330,7 +1377,8 @@ class ClipboardManager: ObservableObject {
         content: String,
         type: ClipboardItemType,
         data: Data? = nil,
-        precomputedFingerprint: String? = nil
+        precomputedFingerprint: String? = nil,
+        precomputedLightweightFingerprint: String? = nil
     ) {
         // 验证输入数据
         guard !content.isEmpty else {
@@ -1341,6 +1389,16 @@ class ClipboardManager: ObservableObject {
         // 限制内容长度以防止内存问题
         let maxContentLength = ClipboardTextSanitizer.maxStoredCharacters
         let truncatedContent = content.count > maxContentLength ? String(content.prefix(maxContentLength)) + "..." : content
+
+        let lightweightFingerprint = precomputedLightweightFingerprint ?? {
+            guard type == .image, let data else { return nil }
+            return ClipboardItemLightweightFingerprint.make(imageData: data)
+        }()
+        if let lightweightFingerprint,
+           promoteExistingLightweightItem(matching: lightweightFingerprint) {
+            logger.debug("轻量指纹命中，重复项目已提升到历史首位（类型: \(type.displayName)）")
+            return
+        }
 
         let fingerprintContent = (type == .text || type == .code) ? content : truncatedContent
         if precomputedFingerprint == nil,
@@ -1359,7 +1417,8 @@ class ClipboardManager: ObservableObject {
                         content: content,
                         type: type,
                         data: data,
-                        precomputedFingerprint: fingerprint
+                        precomputedFingerprint: fingerprint,
+                        precomputedLightweightFingerprint: lightweightFingerprint
                     )
                 }
             }
@@ -1372,7 +1431,12 @@ class ClipboardManager: ObservableObject {
             data: data
         )
         if knownFingerprints.contains(newFingerprint) {
-            logger.debug("跳过重复项目（类型: \(type.displayName)，指纹: \(newFingerprint.prefix(16))）")
+            if promoteExistingItem(matching: newFingerprint),
+               let lightweightFingerprint,
+               let promotedID = clipboardItems.first?.id {
+                lightweightFingerprintItemIDs[lightweightFingerprint] = promotedID
+            }
+            logger.debug("重复项目已提升到历史首位（类型: \(type.displayName)，指纹: \(newFingerprint.prefix(16))）")
             return
         }
         
@@ -1403,6 +1467,9 @@ class ClipboardManager: ObservableObject {
         clipboardItems.insert(item, at: 0)
         itemFingerprints[item.id] = newFingerprint
         knownFingerprints.insert(newFingerprint)
+        if let lightweightFingerprint {
+            lightweightFingerprintItemIDs[lightweightFingerprint] = item.id
+        }
         
         // 生成日志信息
         if type == .image, let imageData = data {
@@ -1526,11 +1593,51 @@ class ClipboardManager: ObservableObject {
 
     /// 将成功使用的记录提升到首位，并异步持久化排序信息。
     func markItemAsUsed(_ item: ClipboardItem, at usedAt: Date = Date()) {
-        guard let index = clipboardItems.firstIndex(where: { $0.id == item.id }) else { return }
+        guard let updatedItem = ClipboardHistoryOrdering.promoteItem(
+            id: item.id,
+            in: &clipboardItems,
+            at: usedAt
+        ) else { return }
 
-        var updatedItem = clipboardItems.remove(at: index)
-        updatedItem.lastUsedAt = max(updatedItem.lastUsedAt ?? .distantPast, usedAt)
-        clipboardItems.insert(updatedItem, at: 0)
+        finishItemPromotion(updatedItem, at: usedAt)
+    }
+
+    @discardableResult
+    private func promoteExistingItem(matching fingerprint: String, at usedAt: Date = Date()) -> Bool {
+        guard let updatedItem = ClipboardHistoryOrdering.promoteExisting(
+            matching: fingerprint,
+            in: &clipboardItems,
+            at: usedAt
+        ) else {
+            // 指纹索引和内存列表短暂不一致时重建索引，避免持续误判重复项。
+            rebuildFingerprintIndex()
+            return false
+        }
+
+        finishItemPromotion(updatedItem, at: usedAt)
+        return true
+    }
+
+    @discardableResult
+    private func promoteExistingLightweightItem(
+        matching lightweightFingerprint: String,
+        at usedAt: Date = Date()
+    ) -> Bool {
+        guard let itemID = lightweightFingerprintItemIDs[lightweightFingerprint] else { return false }
+        guard let updatedItem = ClipboardHistoryOrdering.promoteItem(
+            id: itemID,
+            in: &clipboardItems,
+            at: usedAt
+        ) else {
+            lightweightFingerprintItemIDs.removeValue(forKey: lightweightFingerprint)
+            return false
+        }
+
+        finishItemPromotion(updatedItem, at: usedAt)
+        return true
+    }
+
+    private func finishItemPromotion(_ updatedItem: ClipboardItem, at usedAt: Date) {
 
         if updatedItem.isFavorite || FavoriteManager.shared.isFavorite(updatedItem) {
             FavoriteManager.shared.updateUsage(for: updatedItem)
@@ -1952,6 +2059,7 @@ class ClipboardManager: ObservableObject {
         clipboardItems.sort { $0.sortTimestamp > $1.sortTimestamp }
         clipboardItems = ClipboardHistoryDeduplicator.deduplicate(clipboardItems)
         rebuildFingerprintIndex()
+        scheduleLightweightFingerprintIndexBuild()
         updateFilteredItems()
         FavoriteManager.shared.syncWithClipboardStore()
 
@@ -2052,6 +2160,7 @@ class ClipboardManager: ObservableObject {
         let loadedCount = loadedItems.count
         clipboardItems = ClipboardHistoryDeduplicator.deduplicate(loadedItems)
         rebuildFingerprintIndex()
+        scheduleLightweightFingerprintIndexBuild()
 
         if requiresFingerprintPersistence || clipboardItems.count != loadedCount {
             scheduleFingerprintMigration(persistKnownFingerprints: true)
@@ -2090,6 +2199,7 @@ class ClipboardManager: ObservableObject {
                 if updatedItems.count != self.clipboardItems.count {
                     self.clipboardItems = updatedItems.sorted { $0.sortTimestamp > $1.sortTimestamp }
                     self.rebuildFingerprintIndex()
+                    self.scheduleLightweightFingerprintIndexBuild()
                     self.logger.info("重启后恢复了\(favoriteItems.count)个收藏项目")
                 }
 
@@ -2163,6 +2273,74 @@ class ClipboardManager: ObservableObject {
             }
         )
         knownFingerprints = Set(itemFingerprints.values)
+        let validItemIDs = Set(clipboardItems.map(\.id))
+        lightweightFingerprintItemIDs = lightweightFingerprintItemIDs.filter {
+            validItemIDs.contains($0.value)
+        }
+    }
+
+    private func scheduleLightweightFingerprintIndexBuild() {
+        guard !isLightweightFingerprintIndexRunning else { return }
+
+        let candidates = clipboardItems.filter {
+            $0.type != .text && $0.type != .code
+        }
+        guard !candidates.isEmpty else { return }
+
+        isLightweightFingerprintIndexRunning = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var entries: [String: UUID] = [:]
+            entries.reserveCapacity(candidates.count)
+
+            for item in candidates {
+                autoreleasepool {
+                    let lightweightFingerprint: String?
+                    if item.type == .image {
+                        if let data = item.data {
+                            lightweightFingerprint = ClipboardItemLightweightFingerprint.make(imageData: data)
+                        } else if let filePath = item.filePath {
+                            lightweightFingerprint = ClipboardItemLightweightFingerprint.make(
+                                imageAt: URL(fileURLWithPath: filePath)
+                            )
+                        } else {
+                            lightweightFingerprint = nil
+                        }
+                    } else if let data = item.data {
+                        lightweightFingerprint = ClipboardItemLightweightFingerprint.make(
+                            fileReferencePayload: data,
+                            type: item.type
+                        )
+                    } else if item.type == .file,
+                              let filePath = item.filePath,
+                              let fileSize = try? URL(fileURLWithPath: filePath)
+                                .resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                              fileSize <= ClipboardItemLightweightFingerprint.maximumFileReferencePayloadBytes,
+                              let data = try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedIfSafe) {
+                        lightweightFingerprint = ClipboardItemLightweightFingerprint.make(
+                            fileReferencePayload: data,
+                            type: item.type
+                        )
+                    } else {
+                        lightweightFingerprint = nil
+                    }
+
+                    if let lightweightFingerprint, entries[lightweightFingerprint] == nil {
+                        entries[lightweightFingerprint] = item.id
+                    }
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let currentItemIDs = Set(self.clipboardItems.map(\.id))
+                for (fingerprint, itemID) in entries where currentItemIDs.contains(itemID) {
+                    if self.lightweightFingerprintItemIDs[fingerprint] == nil {
+                        self.lightweightFingerprintItemIDs[fingerprint] = itemID
+                    }
+                }
+                self.isLightweightFingerprintIndexRunning = false
+            }
+        }
     }
     
     // MARK: - 文件处理辅助方法

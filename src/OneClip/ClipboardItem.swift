@@ -305,6 +305,113 @@ enum ClipboardItemFingerprint {
     }
 }
 
+/// A bounded-cost local candidate key used before the canonical full-content fingerprint.
+/// It never replaces the canonical fingerprint used for persistence and WebDAV integrity.
+enum ClipboardItemLightweightFingerprint {
+    static let sampleByteCount = 64 * 1024
+    static let maximumSampledByteCount = sampleByteCount * 3
+    static let maximumFileReferencePayloadBytes = 1024 * 1024
+
+    static func make(imageData: Data) -> String {
+        var hasher = SHA256()
+        updateMetadata(size: imageData.count, hasher: &hasher)
+
+        for range in sampleRanges(forByteCount: imageData.count) {
+            updateRangeMetadata(range, hasher: &hasher)
+            hasher.update(data: imageData.subdata(in: range))
+        }
+
+        return format(hasher.finalize(), prefix: "image-sample-v1")
+    }
+
+    static func make(imageAt url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            let size = try handle.seekToEnd()
+            guard size <= UInt64(Int.max) else { return nil }
+
+            var hasher = SHA256()
+            updateMetadata(size: Int(size), hasher: &hasher)
+            for range in sampleRanges(forByteCount: Int(size)) {
+                try handle.seek(toOffset: UInt64(range.lowerBound))
+                guard let data = try handle.read(upToCount: range.count), data.count == range.count else {
+                    return nil
+                }
+                updateRangeMetadata(range, hasher: &hasher)
+                hasher.update(data: data)
+            }
+            return format(hasher.finalize(), prefix: "image-sample-v1")
+        } catch {
+            return nil
+        }
+    }
+
+    static func make(fileURLs: [URL], type: ClipboardItemType) -> String? {
+        let paths = fileURLs
+            .map { $0.standardizedFileURL.resolvingSymlinksInPath().path }
+            .filter { !$0.isEmpty }
+            .sorted()
+        guard !paths.isEmpty else { return nil }
+
+        let payload = paths.joined(separator: "\u{0}")
+        return format(
+            SHA256.hash(data: Data(payload.utf8)),
+            prefix: "\(type.rawValue)-paths-v1"
+        )
+    }
+
+    static func make(fileReferencePayload data: Data, type: ClipboardItemType) -> String? {
+        guard data.count <= maximumFileReferencePayloadBytes else { return nil }
+
+        if let objects = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let urls = objects.compactMap { object -> URL? in
+                guard let path = object["path"] as? String, !path.isEmpty else { return nil }
+                return URL(fileURLWithPath: path)
+            }
+            if !urls.isEmpty {
+                return make(fileURLs: urls, type: type)
+            }
+        }
+
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let urls = text
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+            .map { URL(fileURLWithPath: $0) }
+        return make(fileURLs: urls, type: type)
+    }
+
+    private static func sampleRanges(forByteCount byteCount: Int) -> [Range<Int>] {
+        guard byteCount > 0 else { return [] }
+        if byteCount <= maximumSampledByteCount {
+            return [0..<byteCount]
+        }
+
+        let middleStart = max(0, (byteCount - sampleByteCount) / 2)
+        return [
+            0..<sampleByteCount,
+            middleStart..<(middleStart + sampleByteCount),
+            (byteCount - sampleByteCount)..<byteCount
+        ]
+    }
+
+    private static func updateMetadata(size: Int, hasher: inout SHA256) {
+        hasher.update(data: Data("v1|size:\(size)|".utf8))
+    }
+
+    private static func updateRangeMetadata(_ range: Range<Int>, hasher: inout SHA256) {
+        hasher.update(data: Data("offset:\(range.lowerBound)|length:\(range.count)|".utf8))
+    }
+
+    private static func format<D: Sequence>(_ digest: D, prefix: String) -> String where D.Element == UInt8 {
+        let digestString = digest.map { String(format: "%02x", $0) }.joined()
+        return "\(prefix):\(digestString)"
+    }
+}
+
 enum ClipboardHistoryDeduplicator {
     static func deduplicate(_ items: [ClipboardItem]) -> [ClipboardItem] {
         var uniqueItems: [ClipboardItem] = []
@@ -327,6 +434,38 @@ enum ClipboardHistoryDeduplicator {
         }
 
         return uniqueItems
+    }
+}
+
+enum ClipboardHistoryOrdering {
+    static func promoteItem(
+        id: UUID,
+        in items: inout [ClipboardItem],
+        at usedAt: Date
+    ) -> ClipboardItem? {
+        promoteItem(in: &items, at: usedAt) { $0.id == id }
+    }
+
+    static func promoteExisting(
+        matching fingerprint: String,
+        in items: inout [ClipboardItem],
+        at usedAt: Date
+    ) -> ClipboardItem? {
+        guard !fingerprint.isEmpty else { return nil }
+        return promoteItem(in: &items, at: usedAt) { $0.fingerprint == fingerprint }
+    }
+
+    private static func promoteItem(
+        in items: inout [ClipboardItem],
+        at usedAt: Date,
+        matching predicate: (ClipboardItem) -> Bool
+    ) -> ClipboardItem? {
+        guard let index = items.firstIndex(where: predicate) else { return nil }
+
+        var updatedItem = items.remove(at: index)
+        updatedItem.lastUsedAt = max(updatedItem.lastUsedAt ?? .distantPast, usedAt)
+        items.insert(updatedItem, at: 0)
+        return updatedItem
     }
 }
 
