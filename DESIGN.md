@@ -50,3 +50,11 @@
 - Email and repository rows are directly actionable and expose clear labels, values, hover affordance, and accessibility descriptions.
 - The standalone window uses a borderless translucent surface with continuous corners, subtle blue depth, and restrained highlights consistent with the app's Liquid Glass language.
 - Author is `Ace` and the support email is `2577113@qq.com`.
+
+## Menu-bar icon
+
+- The menu-bar icon is a dedicated 18-point monochrome template image, never a scaled copy of the full-color application icon.
+- Its mark is a hollow, continuous-line `P` with rounded caps and restrained optical weight, preserving PasteLight recognition without competing with system status items.
+- The source artwork is solid black with transparency and `isTemplate = true`; macOS supplies white on dark menu bars, black on light menu bars, and the correct pressed/disabled treatment.
+- The icon contains no background plate, accent color, shadow, badge, or filled circle. Its visible bounds retain roughly two points of breathing room to avoid crowding adjacent status items.
+- The fallback remains a native monochrome clipboard symbol and must also be configured as a template image.

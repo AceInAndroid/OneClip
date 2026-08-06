@@ -12,6 +12,40 @@ import Testing
 
 struct OneClipTests {
 
+    @MainActor
+    @Test func statusBarIconIsHollowMonochromeTemplate() throws {
+        let image = PasteLightStatusBarIconRenderer.makeImage()
+        let tiff = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiff))
+
+        #expect(image.isTemplate)
+        #expect(image.size == NSSize(width: 18, height: 18))
+        let hollowSampleX = bitmap.pixelsWide / 2
+        // Bitmap rows are top-origin here; this samples the open center of the P bowl.
+        let hollowSampleY = bitmap.pixelsHigh * 5 / 18
+        #expect((bitmap.colorAt(x: hollowSampleX, y: hollowSampleY)?.alphaComponent ?? 1) < 0.1)
+
+        var visiblePixelCount = 0
+        var transparentPixelCount = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+                    continue
+                }
+                if color.alphaComponent > 0.05 {
+                    visiblePixelCount += 1
+                    #expect(abs(color.redComponent - color.greenComponent) < 0.001)
+                    #expect(abs(color.greenComponent - color.blueComponent) < 0.001)
+                } else {
+                    transparentPixelCount += 1
+                }
+            }
+        }
+
+        #expect(visiblePixelCount > 20)
+        #expect(transparentPixelCount > visiblePixelCount)
+    }
+
     @Test func invalidClipboardWritePlanPreservesExistingClipboard() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLightTests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }

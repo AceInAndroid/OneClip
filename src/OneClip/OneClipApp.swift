@@ -7,6 +7,61 @@ import ServiceManagement
 import UserNotifications
 import Combine
 
+enum PasteLightStatusBarIconRenderer {
+    static let pointSize = NSSize(width: 18, height: 18)
+
+    static func makeImage() -> NSImage {
+        let image = NSImage(size: pointSize, flipped: false) { bounds in
+            guard let context = NSGraphicsContext.current else { return false }
+            context.shouldAntialias = true
+            context.imageInterpolation = .high
+
+            let scale = min(bounds.width, bounds.height) / 18
+            let mark = NSBezierPath()
+            mark.move(to: NSPoint(x: 4.7 * scale, y: 2.4 * scale))
+            mark.line(to: NSPoint(x: 4.7 * scale, y: 14.8 * scale))
+            mark.line(to: NSPoint(x: 10.1 * scale, y: 14.8 * scale))
+            mark.curve(
+                to: NSPoint(x: 14.3 * scale, y: 11.2 * scale),
+                controlPoint1: NSPoint(x: 12.8 * scale, y: 14.8 * scale),
+                controlPoint2: NSPoint(x: 14.3 * scale, y: 13.4 * scale)
+            )
+            mark.curve(
+                to: NSPoint(x: 10.1 * scale, y: 7.5 * scale),
+                controlPoint1: NSPoint(x: 14.3 * scale, y: 9.0 * scale),
+                controlPoint2: NSPoint(x: 12.8 * scale, y: 7.5 * scale)
+            )
+            mark.line(to: NSPoint(x: 4.7 * scale, y: 7.5 * scale))
+            mark.lineWidth = 1.55 * scale
+            mark.lineCapStyle = .round
+            mark.lineJoinStyle = .round
+
+            NSColor.black.setStroke()
+            mark.stroke()
+
+            // A short inner light trail keeps the P legible at menu-bar scale while
+            // echoing the app icon's flowing-line character without adding visual weight.
+            let lightTrail = NSBezierPath()
+            lightTrail.move(to: NSPoint(x: 7.7 * scale, y: 11.5 * scale))
+            lightTrail.line(to: NSPoint(x: 10.0 * scale, y: 11.5 * scale))
+            lightTrail.curve(
+                to: NSPoint(x: 11.6 * scale, y: 10.2 * scale),
+                controlPoint1: NSPoint(x: 11.0 * scale, y: 11.5 * scale),
+                controlPoint2: NSPoint(x: 11.6 * scale, y: 11.0 * scale)
+            )
+            lightTrail.lineWidth = 1.15 * scale
+            lightTrail.lineCapStyle = .round
+            lightTrail.lineJoinStyle = .round
+            lightTrail.stroke()
+            return true
+        }
+
+        image.isTemplate = true
+        image.accessibilityDescription = "PasteLight"
+        return image
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var statusItem: NSStatusItem?
     var statusMenu: NSMenu?
@@ -224,29 +279,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return
         }
         
-        // 优先复用应用图标，确保菜单栏与 PasteLight 品牌视觉一致。
-        var iconImage: NSImage?
-
-        if let applicationIcon = NSApp.applicationIconImage.copy() as? NSImage {
-            applicationIcon.size = NSSize(width: 18, height: 18)
-            applicationIcon.isTemplate = false
-            iconImage = applicationIcon
-            logDebug("使用 PasteLight 应用图标作为状态栏图标")
+        // 菜单栏使用专用镂空模板图标。macOS 会根据菜单栏明暗自动渲染白色或黑色，
+        // 并提供原生的按下、禁用和高对比度状态。
+        let iconImage = PasteLightStatusBarIconRenderer.makeImage()
+        if iconImage.isValid {
+            button.image = iconImage
+            logDebug("使用 PasteLight 白色镂空模板状态栏图标")
         } else if let fallbackIcon = NSImage(
             systemSymbolName: "clipboard",
             accessibilityDescription: "PasteLight"
         ) {
             fallbackIcon.isTemplate = true
-            iconImage = fallbackIcon
+            button.image = fallbackIcon
             logDebug("应用图标不可用，使用系统状态栏图标")
-        }
-        
-        if let iconImage = iconImage {
-            button.image = iconImage
-        } else {
-            logDebug("应用图标与系统图标不可用，使用自定义状态栏图标")
-            let customIcon = createCustomIcon()
-            button.image = customIcon
         }
         
         // 最后的备选方案 - 使用简单文本
@@ -258,6 +303,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 菜单栏图标使用 18pt，并保持原始宽高比。
         if let image = button.image {
             image.size = NSSize(width: 18, height: 18)
+            image.isTemplate = true
         }
         button.imageScaling = .scaleProportionallyDown
         
@@ -398,174 +444,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             
             // 暂时禁用延迟验证以避免编译卡死
         // 状态栏项目创建完成
-        }
-    }
-    
-    // 创建自定义图标 - 现代化设计
-    private func createCustomIcon() -> NSImage {
-        let size = NSSize(width: 16, height: 16)
-        let image = NSImage(size: size)
-        
-        image.lockFocus()
-        
-        // 清除背景
-        NSColor.clear.setFill()
-        NSRect(origin: .zero, size: size).fill()
-        
-        // 使用系统适配的颜色
-        let primaryColor = NSColor.labelColor
-        let accentColor = NSColor.controlAccentColor
-        
-        // 设置高质量渲染
-        NSGraphicsContext.current?.imageInterpolation = .high
-        NSGraphicsContext.current?.shouldAntialias = true
-        
-        // 绘制现代剪贴板图标设计
-        drawModernClipboardIcon(size: size, primaryColor: primaryColor, accentColor: accentColor)
-        
-        image.unlockFocus()
-        image.isTemplate = true
-        
-        return image
-    }
-    
-    private func drawModernClipboardIcon(size: NSSize, primaryColor: NSColor, accentColor: NSColor) {
-        // 方案1：现代简约剪贴板设计
-        let iconStyle = getIconStyle()
-        
-        switch iconStyle {
-        case .modern:
-            drawModernMinimalClipboard(size: size, primaryColor: primaryColor, accentColor: accentColor)
-        case .classic:
-            drawClassicClipboard(size: size, primaryColor: primaryColor, accentColor: accentColor)
-        case .rounded:
-            drawRoundedClipboard(size: size, primaryColor: primaryColor, accentColor: accentColor)
-        }
-    }
-    
-    private enum IconStyle {
-        case modern, classic, rounded
-    }
-    
-    private func getIconStyle() -> IconStyle {
-        // 根据系统版本或用户偏好选择图标样式
-        return .modern
-    }
-    
-    // 现代简约风格
-    private func drawModernMinimalClipboard(size: NSSize, primaryColor: NSColor, accentColor: NSColor) {
-        let scale = min(size.width, size.height) / 16.0
-        
-        // 主剪贴板区域 - 使用更现代的比例
-        let boardRect = NSRect(
-            x: 2 * scale,
-            y: 1 * scale, 
-            width: 12 * scale,
-            height: 14 * scale
-        )
-        
-        // 绘制主板背景（轻微的背景色）
-        let boardPath = NSBezierPath(roundedRect: boardRect, xRadius: 2 * scale, yRadius: 2 * scale)
-        NSColor.controlBackgroundColor.withAlphaComponent(0.1).setFill()
-        boardPath.fill()
-        
-        // 绘制边框
-        primaryColor.withAlphaComponent(0.8).setStroke()
-        boardPath.lineWidth = 1.2 * scale
-        boardPath.stroke()
-        
-        // 顶部夹子设计 - 更现代的造型
-        let clipRect = NSRect(
-            x: 6 * scale,
-            y: 13 * scale,
-            width: 4 * scale,
-            height: 2.5 * scale
-        )
-        let clipPath = NSBezierPath(roundedRect: clipRect, xRadius: 1 * scale, yRadius: 1 * scale)
-        accentColor.setFill()
-        clipPath.fill()
-        
-        // 内容线条 - 简洁的设计
-        primaryColor.withAlphaComponent(0.7).setStroke()
-        drawContentLines(inRect: boardRect, scale: scale, lineWidth: 0.8 * scale)
-        
-        // 添加现代化的角标指示器
-        let indicatorRect = NSRect(x: 11 * scale, y: 11 * scale, width: 3 * scale, height: 3 * scale)
-        let indicatorPath = NSBezierPath(ovalIn: indicatorRect)
-        accentColor.withAlphaComponent(0.8).setFill()
-        indicatorPath.fill()
-    }
-    
-    // 经典风格
-    private func drawClassicClipboard(size: NSSize, primaryColor: NSColor, accentColor: NSColor) {
-        let scale = min(size.width, size.height) / 16.0
-        
-        // 经典剪贴板设计
-        let boardRect = NSRect(x: 3 * scale, y: 2 * scale, width: 10 * scale, height: 12 * scale)
-        let boardPath = NSBezierPath(roundedRect: boardRect, xRadius: 1.5 * scale, yRadius: 1.5 * scale)
-        
-        primaryColor.withAlphaComponent(0.8).setStroke()
-        boardPath.lineWidth = 1.5 * scale
-        boardPath.stroke()
-        
-        // 经典夹子
-        let clipRect = NSRect(x: 6.5 * scale, y: 12.5 * scale, width: 3 * scale, height: 2 * scale)
-        let clipPath = NSBezierPath(rect: clipRect)
-        accentColor.setFill()
-        clipPath.fill()
-        
-        // 经典内容线条
-        primaryColor.withAlphaComponent(0.6).setStroke()
-        drawContentLines(inRect: boardRect, scale: scale, lineWidth: 1.0 * scale)
-    }
-    
-    // 圆润风格
-    private func drawRoundedClipboard(size: NSSize, primaryColor: NSColor, accentColor: NSColor) {
-        let scale = min(size.width, size.height) / 16.0
-        
-        // 圆润的剪贴板设计
-        let boardRect = NSRect(x: 2.5 * scale, y: 1.5 * scale, width: 11 * scale, height: 13 * scale)
-        let boardPath = NSBezierPath(roundedRect: boardRect, xRadius: 3 * scale, yRadius: 3 * scale)
-        
-        // 渐变效果
-        let gradient = NSGradient(starting: primaryColor.withAlphaComponent(0.1), ending: primaryColor.withAlphaComponent(0.05))
-        gradient?.draw(in: boardPath, angle: -45)
-        
-        primaryColor.withAlphaComponent(0.8).setStroke()
-        boardPath.lineWidth = 1.2 * scale
-        boardPath.stroke()
-        
-        // 圆润夹子
-        let clipRect = NSRect(x: 6.5 * scale, y: 13 * scale, width: 3 * scale, height: 2 * scale)
-        let clipPath = NSBezierPath(roundedRect: clipRect, xRadius: 1.5 * scale, yRadius: 1.5 * scale)
-        accentColor.setFill()
-        clipPath.fill()
-        
-        // 圆润内容线条
-        primaryColor.withAlphaComponent(0.7).setStroke()
-        drawContentLines(inRect: boardRect, scale: scale, lineWidth: 0.9 * scale, rounded: true)
-    }
-    
-    private func drawContentLines(inRect rect: NSRect, scale: CGFloat, lineWidth: CGFloat, rounded: Bool = false) {
-        let leftMargin = rect.minX + 2 * scale
-        let rightMargin = rect.maxX - 2 * scale
-        let lineSpacing = 2.2 * scale
-        let startY = rect.maxY - 3 * scale
-        
-        // 绘制内容线条，长度递减营造层次感
-        let lineLengths: [CGFloat] = [0.85, 0.75, 0.6, 0.45] // 相对长度
-        
-        for (index, relativeLength) in lineLengths.enumerated() {
-            let y = startY - CGFloat(index) * lineSpacing
-            if y < rect.minY + 2 * scale { break }
-            
-            let lineWidth = (rightMargin - leftMargin) * relativeLength
-            let linePath = NSBezierPath()
-            linePath.move(to: NSPoint(x: leftMargin, y: y))
-            linePath.line(to: NSPoint(x: leftMargin + lineWidth, y: y))
-            linePath.lineWidth = lineWidth
-            linePath.lineCapStyle = rounded ? .round : .square
-            linePath.stroke()
         }
     }
     
