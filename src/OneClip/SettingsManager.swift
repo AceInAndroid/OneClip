@@ -221,7 +221,10 @@ class SettingsManager: ObservableObject {
     
     // MARK: - 发布属性，用于 SwiftUI 绑定
     @Published var showInDock: Bool = false {
-        didSet { saveSettings() }
+        didSet {
+            saveSettings()
+            NotificationCenter.default.post(name: .dockToggle, object: showInDock)
+        }
     }
     
     @Published var enableHistoryPersistence: Bool = true {

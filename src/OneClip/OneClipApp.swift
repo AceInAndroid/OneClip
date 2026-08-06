@@ -106,9 +106,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 监听应用事件
         setupApplicationObservers()
         
-        // 设置应用不退出当最后一个窗口关闭时
-        // 初始设置为 regular 模式，确保 dock 图标可以显示
-        NSApp.setActivationPolicy(.regular)
+        // Dock 图标默认隐藏；用户可在设置中切换，启动时立即应用持久化配置。
+        NSApp.setActivationPolicy(SettingsManager.shared.showInDock ? .regular : .accessory)
         
         // 禁用"新建窗口"菜单项
         if let mainMenu = NSApplication.shared.mainMenu {
@@ -152,15 +151,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             // 启动策略检查 - 窗口可见: \(hasVisibleWindows)
             
             if !hasVisibleWindows {
-                // 没有可见窗口，默认隐藏 Dock 图标
-                NSApp.setActivationPolicy(.accessory)
-                // 应用启动完成，默认隐藏 Dock 图标
+                NSApp.setActivationPolicy(SettingsManager.shared.showInDock ? .regular : .accessory)
                 
                 // 立即确保状态栏图标在切换到accessory模式后保持可见
                 self.ensureStatusBarVisibilityAfterPolicyChange()
-            } else {
-                // 有可见窗口，暂时保持 regular 模式
-                // 应用启动完成，有可见窗口，暂时保持 Dock 图标
             }
             
             // 切换到后台模式后，确保状态栏图标仍然可见
@@ -1471,8 +1465,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private func showMainWindowToFront() {
         // 显示主窗口到最前面
         
-        // 始终显示Dock图标当窗口被显示时
-        NSApp.setActivationPolicy(.regular)
+        // 显示窗口时遵循用户的 Dock 图标设置。
+        NSApp.setActivationPolicy(SettingsManager.shared.showInDock ? .regular : .accessory)
         
         // 确保使用现有的主窗口
         if mainWindow == nil {

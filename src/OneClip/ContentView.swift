@@ -3589,6 +3589,15 @@ struct SettingsView: View {
                         icon: "menubar.rectangle",
                         binding: $settingsManager.showInMenuBar
                     )
+
+                    Divider().opacity(0.5)
+
+                    ModernToggleRow(
+                        title: "显示在 Dock",
+                        subtitle: "默认隐藏；开启后在 Dock 和应用切换器中显示",
+                        icon: "dock.rectangle",
+                        binding: $settingsManager.showInDock
+                    )
                     
                     Divider().opacity(0.5)
                     
@@ -3643,89 +3652,6 @@ struct SettingsView: View {
                 }
             }
             
-            // 智能Dock控制
-            ModernSettingsCard(title: "智能 Dock 控制", icon: "dock.rectangle", color: .blue) {
-                VStack(spacing: 16) {
-                    HStack {
-                        Image(systemName: "command")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.blue)
-                            .frame(width: 30, height: 30)
-                            .background(
-                                Circle()
-                                    .fill(.blue.opacity(0.1))
-                            )
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("快捷键呼出")
-                                .font(.system(.body, design: .default, weight: .medium))
-                            Text("自动显示 Dock 图标")
-                                .font(.system(.caption, design: .default))
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Text("✓")
-                            .font(.system(.headline, weight: .semibold))
-                            .foregroundColor(.green)
-                    }
-                    
-                    Divider().opacity(0.5)
-                    
-                    HStack {
-                        Image(systemName: "escape")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.blue)
-                            .frame(width: 30, height: 30)
-                            .background(
-                                Circle()
-                                    .fill(.blue.opacity(0.1))
-                            )
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("ESC 键隐藏")
-                                .font(.system(.body, design: .default, weight: .medium))
-                            Text("自动隐藏 Dock 图标")
-                                .font(.system(.caption, design: .default))
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Text("✓")
-                            .font(.system(.headline, weight: .semibold))
-                            .foregroundColor(.green)
-                    }
-                    
-                    Divider().opacity(0.5)
-                    
-                    HStack {
-                        Image(systemName: "gear.badge.checkmark")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.blue)
-                            .frame(width: 30, height: 30)
-                            .background(
-                                Circle()
-                                    .fill(.blue.opacity(0.1))
-                            )
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("无需手动管理")
-                                .font(.system(.body, design: .default, weight: .medium))
-                            Text("完全自动化处理")
-                                .font(.system(.caption, design: .default))
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        Spacer()
-                        
-                        Text("✓")
-                            .font(.system(.headline, weight: .semibold))
-                            .foregroundColor(.green)
-                    }
-                }
-            }
         }
     }
     

@@ -12,6 +12,10 @@ import Testing
 
 struct OneClipTests {
 
+    @Test func dockIconIsHiddenByDefault() {
+        #expect(AppSettings().showInDock == false)
+    }
+
     @MainActor
     @Test func statusBarIconIsHollowMonochromeTemplate() throws {
         let image = PasteLightStatusBarIconRenderer.makeImage()
