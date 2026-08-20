@@ -68,9 +68,9 @@ enum ClipboardImagePayloadReader {
         let declaredTypes = provider.types ?? []
         let declaredTypeSet = Set(declaredTypes)
 
-        if let preferred = preferredFormats.first(where: { declaredTypeSet.contains($0.0) }) {
+        for preferred in preferredFormats where declaredTypeSet.contains(preferred.0) {
             guard let data = provider.data(forType: preferred.0), data.count > 20 else {
-                return nil
+                continue
             }
             return ClipboardImagePayload(data: data, type: preferred.0, formatName: preferred.1)
         }
@@ -91,6 +91,26 @@ enum ClipboardImagePayloadReader {
             type: customType,
             formatName: "自定义(\(customType.rawValue))"
         )
+    }
+}
+
+enum ClipboardContentRouting {
+    private static let explicitFileSourceTypes: [String] = [
+        "com.apple.finder",
+        "com.apple.filepromise",
+        "com.apple.pasteboard.promised-file"
+    ]
+
+    /// Some chat applications publish both a real image representation and a temporary file URL.
+    /// Prefer the image unless the pasteboard explicitly identifies a Finder/file-promise operation.
+    static func shouldPreferImagePayload(
+        declaredTypes: [NSPasteboard.PasteboardType]
+    ) -> Bool {
+        let hasExplicitFileSource = declaredTypes.contains { type in
+            let value = type.rawValue.lowercased()
+            return explicitFileSourceTypes.contains { value.contains($0) }
+        }
+        return !hasExplicitFileSource
     }
 }
 
@@ -553,17 +573,24 @@ class ClipboardManager: ObservableObject {
             return
         }
         
-        // 重新设计的检测逻辑：智能区分访达文件复制和直接图片复制
-        
-        // 1. 首先检查是否有本地文件URL（访达复制文件的情况）
-        if let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-           !fileURLs.isEmpty {
+        // 微信等应用可能同时发布真实图片数据和缓存文件 URL。若不是明确的 Finder
+        // 文件复制，优先读取图片，避免把缓存路径作为文件重新写回目标聊天框。
+        let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        let localFileURLs = fileURLs.filter { url in
+            url.isFileURL && FileManager.default.fileExists(atPath: url.path)
+        }
+        if !localFileURLs.isEmpty,
+           ClipboardContentRouting.shouldPreferImagePayload(
+            declaredTypes: types ?? []
+        ), let imagePayload = ClipboardImagePayloadReader.read(from: pasteboard) {
+            logger.info("检测到图片数据，优先于临时文件 URL 处理")
+            handleImagePayload(imagePayload)
+            return
+        }
+
+        // 明确的文件复制继续保持文件语义；图片文件仍会读取为图片历史项。
+        if !fileURLs.isEmpty {
             logger.info("发现URL: \(fileURLs.map { $0.absoluteString })")
-            
-            // 过滤出真正的本地文件URL（file:// 协议且文件存在）
-            let localFileURLs = fileURLs.filter { url in
-                return url.isFileURL && FileManager.default.fileExists(atPath: url.path)
-            }
             
             if !localFileURLs.isEmpty {
                 logger.info("确认本地文件URL: \(localFileURLs.map { $0.path })")
@@ -1071,6 +1098,10 @@ class ClipboardManager: ObservableObject {
             return
         }
 
+        handleImagePayload(payload)
+    }
+
+    private func handleImagePayload(_ payload: ClipboardImagePayload) {
         let data = payload.data
         logger.info("成功获取 \(payload.formatName) 格式图片: \(data.count) 字节")
 

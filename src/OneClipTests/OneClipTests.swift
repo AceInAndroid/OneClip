@@ -193,6 +193,76 @@ struct OneClipTests {
         #expect(provider.readCount == 1)
     }
 
+    @Test func imagePayloadReaderFallsBackWhenPreferredRepresentationIsEmpty() throws {
+        let provider = CountingImageDataProvider(
+            types: [.png, .tiff],
+            payloads: [
+                .png: Data(),
+                .tiff: Data(repeating: 0x02, count: 32)
+            ]
+        )
+
+        let payload = try #require(ClipboardImagePayloadReader.read(from: provider))
+
+        #expect(payload.type == .tiff)
+        #expect(provider.readCount == 2)
+    }
+
+    @Test func chatImagePayloadWinsOverTemporaryFileURL() {
+        let types: [NSPasteboard.PasteboardType] = [
+            .png,
+            .fileURL,
+            NSPasteboard.PasteboardType("com.tencent.xinWeChat.image")
+        ]
+
+        #expect(ClipboardContentRouting.shouldPreferImagePayload(
+            declaredTypes: types
+        ))
+    }
+
+    @Test func finderFileCopyKeepsFileSemantics() {
+        let types: [NSPasteboard.PasteboardType] = [
+            .tiff,
+            .fileURL,
+            NSPasteboard.PasteboardType("com.apple.finder.node")
+        ]
+
+        #expect(!ClipboardContentRouting.shouldPreferImagePayload(
+            declaredTypes: types
+        ))
+    }
+
+    @Test func imageHistoryWritesImageDataWithoutLeakingStoragePath() throws {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 8,
+            pixelsHigh: 8,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let pngData = try #require(bitmap.representation(using: .png, properties: [:]))
+        let item = ClipboardItem(
+            id: UUID(),
+            content: "微信图片",
+            type: .image,
+            timestamp: Date(),
+            data: pngData,
+            filePath: "/tmp/PasteLight/should-not-be-published.png"
+        )
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("PasteLightImageWrite.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        #expect(ClipboardManager.shared.copyToClipboard(item: item, pasteboard: pasteboard))
+        #expect(pasteboard.data(forType: .png) == pngData)
+        #expect(pasteboard.string(forType: .fileURL) == nil)
+        #expect(pasteboard.string(forType: .string) == nil)
+    }
+
     @Test func clipboardItemDateCodingPreservesTimestampAndLegacyNumericDates() throws {
         let timestamp = Date(timeIntervalSince1970: 1_721_234_567.123)
         let item = ClipboardItem(
