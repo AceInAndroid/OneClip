@@ -8,6 +8,23 @@ enum ClipboardNavigationDirection {
     case next
 }
 
+struct ClipboardListResumeState {
+    static let resetInterval: TimeInterval = 5 * 60
+    private var hiddenAt: Date?
+
+    mutating func updateVisibility(_ isVisible: Bool, at date: Date = Date()) -> Bool {
+        guard isVisible else {
+            // Repeated hidden-state updates must not restart the idle interval.
+            if hiddenAt == nil { hiddenAt = date }
+            return false
+        }
+
+        defer { hiddenAt = nil }
+        guard let hiddenAt else { return false }
+        return date.timeIntervalSince(hiddenAt) >= Self.resetInterval
+    }
+}
+
 final class PasteRequestGate {
     private let lock = NSLock()
     private var isActive = false
@@ -125,6 +142,8 @@ struct ContentView: View {
     @State private var selectedItemToDelete: ClipboardItem? = nil // 待删除的项目
     @State private var pasteRequestGate = PasteRequestGate()
     @State private var listSnapshot = ClipboardListSnapshot.empty
+    @State private var resumeState = ClipboardListResumeState()
+    @State private var scrollResetID = UUID()
 
     // 动画辅助方法
     private func performAnimation(_ animation: Animation, action: @escaping () -> Void) {
@@ -469,6 +488,9 @@ struct ContentView: View {
             .onChange(of: selectedIndex) { _, index in
                 scrollToSelectedItem(index, using: proxy)
             }
+            .onChange(of: scrollResetID) { _, _ in
+                scrollToFirstItem(using: proxy)
+            }
         }
     }
 
@@ -586,6 +608,9 @@ struct ContentView: View {
             .scrollTargetBehavior(.viewAligned)
             .onChange(of: selectedIndex) { _, index in
                 scrollToSelectedItem(index, using: proxy)
+            }
+            .onChange(of: scrollResetID) { _, _ in
+                scrollToFirstItem(using: proxy)
             }
         }
     }
@@ -720,12 +745,22 @@ struct ContentView: View {
             NotificationCenter.default.removeObserver(self, name: NSApplication.didResignActiveNotification, object: nil)
         }
         .onChange(of: windowManager.isWindowVisible) { _, newValue in
+            let shouldResetPosition = resumeState.updateVisibility(newValue)
             // 根据WindowManager的状态控制窗口状态
             DispatchQueue.main.async {
                 if newValue {
                     // 每次打开都从浏览状态开始，搜索框默认不展示也不抢占焦点。
                     self.resetSearchMode()
                     self.selectedIndex = nil
+                    if shouldResetPosition {
+                        // Allow clearing search to rebuild the visible list first.
+                        DispatchQueue.main.async {
+                            guard self.windowManager.isWindowVisible else { return }
+                            self.refreshListSnapshot()
+                            self.selectedIndex = self.filteredItems.isEmpty ? nil : 0
+                            self.scrollResetID = UUID()
+                        }
+                    }
                 } else {
                     self.resetSearchMode()
                     self.selectedIndex = nil
@@ -1077,6 +1112,15 @@ struct ContentView: View {
             }
         } else {
             proxy.scrollTo(itemID, anchor: .center)
+        }
+    }
+
+    private func scrollToFirstItem(using proxy: ScrollViewProxy) {
+        guard let firstItem = filteredItems.first else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(firstItem.id, anchor: .topLeading)
         }
     }
 

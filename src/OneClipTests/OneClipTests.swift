@@ -12,6 +12,44 @@ import Testing
 
 struct OneClipTests {
 
+    @Test func clipboardResumePreservesPositionBeforeFiveMinutes() {
+        var state = ClipboardListResumeState()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let results = [
+            state.updateVisibility(true, at: start),
+            state.updateVisibility(false, at: start),
+            state.updateVisibility(true, at: start.addingTimeInterval(299)),
+            state.updateVisibility(true, at: start.addingTimeInterval(900))
+        ]
+        #expect(results == [false, false, false, false])
+    }
+
+    @Test func clipboardResumeResetsAtFiveMinutesAndAfterSleep() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        for interval: TimeInterval in [300, 900, 86_400] {
+            var state = ClipboardListResumeState()
+            let results = [
+                state.updateVisibility(false, at: start),
+                state.updateVisibility(true, at: start.addingTimeInterval(interval)),
+                state.updateVisibility(true, at: start.addingTimeInterval(interval + 1))
+            ]
+            #expect(results == [false, true, false])
+        }
+    }
+
+    @Test func clipboardResumeRepeatedHideDoesNotExtendTimeout() {
+        var state = ClipboardListResumeState()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let results = [
+            state.updateVisibility(false, at: start),
+            state.updateVisibility(false, at: start.addingTimeInterval(250)),
+            state.updateVisibility(true, at: start.addingTimeInterval(300)),
+            state.updateVisibility(false, at: start.addingTimeInterval(301)),
+            state.updateVisibility(true, at: start.addingTimeInterval(302))
+        ]
+        #expect(results == [false, false, true, false, false])
+    }
+
     @Test func dockIconIsHiddenByDefault() {
         #expect(AppSettings().showInDock == false)
     }
