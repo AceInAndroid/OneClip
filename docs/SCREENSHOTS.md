@@ -35,6 +35,10 @@ SCScreenshotManager supports the existing macOS 14 deployment target.
   image import limit applies.
 - Return, double-click, or Copy confirms; Escape, right-click, or Cancel aborts.
   Selections cannot span displays. There is no editor, OCR, or screen recording.
+- Selection panels explicitly disable NSPanel's default hide-on-deactivation
+  behavior. A repeated capture action brings the existing selection back to the
+  front, rather than ignoring the action while an invisible session remains busy.
+  No decision depends on WeChat or any other external application's identity.
 - Permission checks do not prompt on startup. A user action requests system
   permission and can open the privacy pane. Accessibility is not required for
   capture or shortcut registration.

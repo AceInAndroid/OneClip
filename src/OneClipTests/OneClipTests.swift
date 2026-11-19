@@ -89,13 +89,33 @@ struct OneClipTests {
     }
 
     @MainActor
+    @Test func screenshotPanelsStayAvailableAfterDeactivationAndCanBeRestored() {
+        let first = ScreenshotSelectionPanel.make(frame: CGRect(x: -10000, y: 0, width: 40, height: 40))
+        let second = ScreenshotSelectionPanel.make(frame: CGRect(x: -10050, y: 0, width: 40, height: 40))
+        let panels = [first, second]
+        defer { panels.forEach { $0.orderOut(nil) } }
+        for panel in panels {
+            #expect(!panel.hidesOnDeactivate)
+            #expect(panel.canBecomeKey)
+            #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
+        }
+        ScreenshotSelectionPanel.present(panels)
+        #expect(panels.allSatisfy { $0.isVisible })
+        NSApp.deactivate()
+        #expect(panels.allSatisfy { $0.isVisible })
+        panels.forEach { $0.orderOut(nil) }
+        #expect(panels.allSatisfy { !$0.isVisible })
+        ScreenshotSelectionPanel.present(panels)
+        #expect(panels.allSatisfy { $0.isVisible })
+    }
+
+    @MainActor
     @Test func screenshotSelectionConfirmsOnReturnAndDoubleClickAndCancelsSafely() throws {
         let context = try #require(CGContext(data: nil, width: 200, height: 200, bitsPerComponent: 8,
                                              bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         let image = try #require(context.makeImage())
-        let panel = ScreenshotSelectionPanel(contentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
-                                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let panel = ScreenshotSelectionPanel.make(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         let view = ScreenshotSelectionView(image: image, size: CGSize(width: 100, height: 100))
         panel.contentView = view
         defer { panel.contentView = nil; panel.orderOut(nil) }

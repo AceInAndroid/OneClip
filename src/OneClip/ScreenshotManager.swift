@@ -65,7 +65,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
     private var captureTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var sessionID = UUID()
-    private var panels: [NSPanel] = []
+    private var panels: [ScreenshotSelectionPanel] = []
     private var previousApplication: NSRunningApplication?
     private var toastPanel: NSPanel?
     private var toastTask: Task<Void, Never>?
@@ -135,7 +135,15 @@ final class ScreenshotManager: NSObject, ObservableObject {
     }
 
     func startCapture() {
-        guard !isCapturing else { return }
+        if isCapturing {
+            // An existing selection may have lost focus or been ordered out by macOS.
+            // Restore that session instead of silently ignoring every subsequent action.
+            if !panels.isEmpty {
+                ScreenshotSelectionPanel.present(panels)
+                Logger.shared.info("已恢复截图框选窗口")
+            }
+            return
+        }
         guard refreshPermission() else {
             let alert = NSAlert()
             alert.messageText = "允许 PasteLight 截取屏幕"
@@ -148,6 +156,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
         }
 
         isCapturing = true
+        Logger.shared.info("开始区域截图")
         statusMessage = "正在准备截图…"
         sessionID = UUID()
         let currentSession = sessionID
@@ -191,6 +200,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
                     snapshots.append((screen, image))
                 }
                 guard !snapshots.isEmpty else { throw ScreenshotError.noDisplay }
+                Logger.shared.info("截图静态图已就绪：\(snapshots.count) 个显示器")
                 self.timeoutTask?.cancel()
                 self.timeoutTask = nil
                 self.presentSelection(snapshots)
@@ -205,15 +215,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
 
     private func presentSelection(_ snapshots: [(NSScreen, CGImage)]) {
         for (screen, image) in snapshots {
-            let panel = ScreenshotSelectionPanel(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            panel.setFrame(screen.frame, display: false)
-            panel.level = .screenSaver
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.isReleasedWhenClosed = false
-            panel.isOpaque = true
-            panel.backgroundColor = .black
-            panel.hasShadow = false
-            panel.sharingType = .none
+            let panel = ScreenshotSelectionPanel.make(frame: screen.frame)
             let view = ScreenshotSelectionView(image: image, size: screen.frame.size)
             view.onCancel = { [weak self] in self?.cancel() }
             view.onSelect = { [weak self, weak view] in
@@ -227,11 +229,9 @@ final class ScreenshotManager: NSObject, ObservableObject {
             panel.contentView = view
             panel.makeFirstResponder(view)
             panels.append(panel)
-            panel.orderFrontRegardless()
         }
-        let pointer = NSEvent.mouseLocation
-        (panels.first(where: { $0.frame.contains(pointer) }) ?? panels.first)?.makeKey()
-        NSApp.activate(ignoringOtherApps: true)
+        ScreenshotSelectionPanel.present(panels)
+        Logger.shared.info("截图框选窗口已显示")
         statusMessage = "拖动框选，回车或双击选区复制；Esc / 右键取消。"
     }
 
@@ -289,6 +289,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
     }
 
     private func fail(_ message: String) {
+        Logger.shared.error("截图失败：\(message)")
         finishSession()
         refreshPermission()
         statusMessage = message
@@ -330,6 +331,31 @@ final class ScreenshotManager: NSObject, ObservableObject {
 final class ScreenshotSelectionPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    static func make(frame: CGRect) -> ScreenshotSelectionPanel {
+        let panel = ScreenshotSelectionPanel(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.setFrame(frame, display: false)
+        panel.level = .screenSaver
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        // NSPanel defaults to hiding on deactivation. A screenshot must remain usable
+        // even if WeChat or any other application becomes active during selection.
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = true
+        panel.backgroundColor = .black
+        panel.hasShadow = false
+        panel.sharingType = .none
+        return panel
+    }
+
+    static func present(_ panels: [ScreenshotSelectionPanel]) {
+        guard !panels.isEmpty else { return }
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        for panel in panels { panel.orderFrontRegardless() }
+        let pointer = NSEvent.mouseLocation
+        (panels.first(where: { $0.frame.contains(pointer) }) ?? panels.first)?.makeKeyAndOrderFront(nil)
+    }
 
     override func sendEvent(_ event: NSEvent) {
         // Keep confirmation/cancellation available even when a toolbar button has focus.
