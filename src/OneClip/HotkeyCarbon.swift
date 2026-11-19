@@ -1,6 +1,10 @@
 import Cocoa
 import Carbon
 
+extension Notification.Name {
+    static let shortcutRecordingChanged = Notification.Name("PasteLight.shortcutRecordingChanged")
+}
+
 class Hotkey {
     private let keyCode: UInt16
     private let modifierFlags: NSEvent.ModifierFlags
@@ -60,6 +64,16 @@ class Hotkey {
         }
 
         Logger.debug("全局快捷键注册完成: \(modifierDescription())")
+    }
+
+    /// Screenshot shortcuts must report conflicts instead of silently requiring accessibility.
+    @discardableResult
+    func registerCarbonOnly() -> Bool {
+        if carbonEventHandler == nil { setupCarbonEventHandler() }
+        guard carbonEventHandler != nil, registerCarbonHotkey() else { return false }
+        useCarbon = true
+        isRegistered = true
+        return true
     }
     
     // MARK: - Carbon 热键实现（主要方案）

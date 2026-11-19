@@ -38,6 +38,13 @@ enum ClipboardPresentationMode: String, CaseIterable, Codable, Identifiable {
 struct GlobalShortcut: Equatable {
     static let defaultKeyCode: UInt16 = 9 // V
     static let defaultModifierFlags = NSEvent.ModifierFlags.command.union(.shift).rawValue
+    static let screenshotDefault = GlobalShortcut(keyCode: 7) // Command + Shift + X
+
+    func conflicts(with other: GlobalShortcut) -> Bool {
+        let modifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+        return keyCode == other.keyCode &&
+            modifierFlags.intersection(modifiers) == other.modifierFlags.intersection(modifiers)
+    }
 
     let keyCode: UInt16
     let modifierFlags: NSEvent.ModifierFlags
@@ -129,6 +136,8 @@ struct AppSettings: Codable {
     var keepWindowOnTop: Bool
     var globalShortcutKeyCode: UInt16?
     var globalShortcutModifierFlags: UInt?
+    var screenshotShortcutKeyCode: UInt16?
+    var screenshotShortcutModifierFlags: UInt?
     var clipboardPresentationMode: String?
     var webDAVConfiguration: WebDAVConfiguration?
     
@@ -154,6 +163,8 @@ struct AppSettings: Codable {
         keepWindowOnTop = false
         globalShortcutKeyCode = GlobalShortcut.defaultKeyCode
         globalShortcutModifierFlags = GlobalShortcut.defaultModifierFlags
+        screenshotShortcutKeyCode = GlobalShortcut.screenshotDefault.keyCode
+        screenshotShortcutModifierFlags = GlobalShortcut.screenshotDefault.modifierFlags.rawValue
         clipboardPresentationMode = ClipboardPresentationMode.bottomShelf.rawValue
         webDAVConfiguration = WebDAVConfiguration()
     }
@@ -328,6 +339,11 @@ class SettingsManager: ObservableObject {
         didSet { saveSettings() }
     }
 
+    @Published var screenshotShortcut: GlobalShortcut = .screenshotDefault {
+        didSet { saveSettings() }
+    }
+    @Published private(set) var shortcutConflictMessage: String?
+
     @Published var clipboardPresentationMode: ClipboardPresentationMode = .bottomShelf {
         didSet {
             saveSettings()
@@ -398,9 +414,27 @@ class SettingsManager: ObservableObject {
         hasShownPermissionPrompt = true
     }
 
-    func updateGlobalShortcut(_ shortcut: GlobalShortcut) {
+    @discardableResult
+    func updateGlobalShortcut(_ shortcut: GlobalShortcut) -> Bool {
+        guard !shortcut.conflicts(with: screenshotShortcut) else {
+            shortcutConflictMessage = "此组合键已用于区域截图，请选择其他快捷键。"
+            return false
+        }
+        shortcutConflictMessage = nil
         globalShortcutKeyCode = shortcut.keyCode
         globalShortcutModifierFlags = shortcut.modifierFlags.rawValue
+        return true
+    }
+
+    @discardableResult
+    func updateScreenshotShortcut(_ shortcut: GlobalShortcut) -> Bool {
+        guard !shortcut.conflicts(with: globalShortcut) else {
+            shortcutConflictMessage = "此组合键已用于显示剪贴板，请选择其他快捷键。"
+            return false
+        }
+        shortcutConflictMessage = nil
+        screenshotShortcut = shortcut
+        return true
     }
     
     /// 重置到默认设置
@@ -434,6 +468,8 @@ class SettingsManager: ObservableObject {
             self.keepWindowOnTop = defaults.keepWindowOnTop
             self.globalShortcutKeyCode = defaults.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
             self.globalShortcutModifierFlags = defaults.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
+            self.screenshotShortcut = .screenshotDefault
+            self.shortcutConflictMessage = nil
             self.clipboardPresentationMode = ClipboardPresentationMode(
                 rawValue: defaults.clipboardPresentationMode ?? ""
             ) ?? .bottomShelf
@@ -509,6 +545,10 @@ class SettingsManager: ObservableObject {
                 self.keepWindowOnTop = settings.keepWindowOnTop
                 self.globalShortcutKeyCode = settings.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
                 self.globalShortcutModifierFlags = settings.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
+                self.screenshotShortcut = GlobalShortcut(
+                    keyCode: settings.screenshotShortcutKeyCode ?? GlobalShortcut.screenshotDefault.keyCode,
+                    modifierFlags: settings.screenshotShortcutModifierFlags ?? GlobalShortcut.screenshotDefault.modifierFlags.rawValue
+                )
                 self.clipboardPresentationMode = ClipboardPresentationMode(
                     rawValue: settings.clipboardPresentationMode ?? ""
                 ) ?? .bottomShelf
@@ -584,6 +624,12 @@ class SettingsManager: ObservableObject {
                 self.autoCleanupDays = HistoryRetentionPolicy.normalizedDays(settings.autoCleanupDays)
                 self.themeMode = settings.themeMode
                 self.keepWindowOnTop = settings.keepWindowOnTop
+                self.globalShortcutKeyCode = settings.globalShortcutKeyCode ?? GlobalShortcut.defaultKeyCode
+                self.globalShortcutModifierFlags = settings.globalShortcutModifierFlags ?? GlobalShortcut.defaultModifierFlags
+                self.screenshotShortcut = GlobalShortcut(
+                    keyCode: settings.screenshotShortcutKeyCode ?? GlobalShortcut.screenshotDefault.keyCode,
+                    modifierFlags: settings.screenshotShortcutModifierFlags ?? GlobalShortcut.screenshotDefault.modifierFlags.rawValue
+                )
                 self.clipboardPresentationMode = ClipboardPresentationMode(
                     rawValue: settings.clipboardPresentationMode ?? ""
                 ) ?? .bottomShelf
@@ -630,6 +676,8 @@ class SettingsManager: ObservableObject {
         settings.keepWindowOnTop = keepWindowOnTop
         settings.globalShortcutKeyCode = globalShortcutKeyCode
         settings.globalShortcutModifierFlags = globalShortcutModifierFlags
+        settings.screenshotShortcutKeyCode = screenshotShortcut.keyCode
+        settings.screenshotShortcutModifierFlags = screenshotShortcut.modifierFlags.rawValue
         settings.clipboardPresentationMode = clipboardPresentationMode.rawValue
         settings.webDAVConfiguration = webDAVConfiguration
         

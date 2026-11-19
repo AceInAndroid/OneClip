@@ -1101,6 +1101,18 @@ class ClipboardManager: ObservableObject {
         handleImagePayload(payload)
     }
 
+    /// Import explicitly so screenshot history is not lost to polling debounce or the copy-suppression gate.
+    @MainActor
+    @discardableResult
+    func importScreenshot(_ data: Data, pasteboard: NSPasteboard = .general) -> Bool {
+        guard !data.isEmpty, Int64(data.count) <= maxClipboardImageBytes,
+              ImageThumbnailDecoder.metadata(from: data) != nil else { return false }
+        guard ClipboardWritePlan(values: [.data(data, .png)]).commit(to: pasteboard) else { return false }
+        if pasteboard === NSPasteboard.general { lastChangeCount = pasteboard.changeCount }
+        handleImagePayload(ClipboardImagePayload(data: data, type: .png, formatName: "PNG"))
+        return true
+    }
+
     private func handleImagePayload(_ payload: ClipboardImagePayload) {
         let data = payload.data
         logger.info("成功获取 \(payload.formatName) 格式图片: \(data.count) 字节")

@@ -410,6 +410,8 @@ class WindowManager: ObservableObject {
         guard let window = window else { return }
         
         DispatchQueue.main.async {
+            // Settings/About can temporarily enable the Dock; restore the preference before showing history.
+            NSApp.setActivationPolicy(SettingsManager.shared.showInDock ? .regular : .accessory)
             self.applyPresentationMode(animated: false)
 
             let mode = SettingsManager.shared.clipboardPresentationMode

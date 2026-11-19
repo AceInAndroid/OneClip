@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CC00000129A8B5000123456 /* ScreenshotManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC00000229A8B5000123456 /* ScreenshotManager.swift */; };
+		CC00000329A8B5000123456 /* ScreenshotSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC00000429A8B5000123456 /* ScreenshotSettingsView.swift */; };
 		BB00000129A8B5000123456 /* OneClipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000229A8B5000123456 /* OneClipTests.swift */; };
 		AA00000129A8B4B700123456 /* OneClipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000029A8B4B700123456 /* OneClipApp.swift */; };
 		AA00000329A8B4B700123456 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000229A8B4B700123456 /* ContentView.swift */; };
@@ -48,6 +50,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CC00000229A8B5000123456 /* ScreenshotManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotManager.swift; sourceTree = "<group>"; };
+		CC00000429A8B5000123456 /* ScreenshotSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotSettingsView.swift; sourceTree = "<group>"; };
 		BB00000229A8B5000123456 /* OneClipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneClipTests.swift; sourceTree = "<group>"; };
 		BB00000329A8B5000123456 /* OneClipTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OneClipTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000FD29A8B4B700123456 /* PasteLight.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PasteLight.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -122,6 +126,8 @@
 			children = (
 				AA00000029A8B4B700123456 /* OneClipApp.swift */,
 				AA00000229A8B4B700123456 /* ContentView.swift */,
+				CC00000229A8B5000123456 /* ScreenshotManager.swift */,
+				CC00000429A8B5000123456 /* ScreenshotSettingsView.swift */,
 				AA00005429A8B5000123456 /* AboutView.swift */,
 				AA00005229A8B5000123456 /* ClipboardItemRowView.swift */,
 				AA00001029A8B4D200123456 /* ClipboardManager.swift */,
@@ -269,6 +275,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA00000329A8B4B700123456 /* ContentView.swift in Sources */,
+				CC00000129A8B5000123456 /* ScreenshotManager.swift in Sources */,
+				CC00000329A8B5000123456 /* ScreenshotSettingsView.swift in Sources */,
 				AA00005529A8B5000123456 /* AboutView.swift in Sources */,
 				AA00001129A8B4D200123456 /* ClipboardManager.swift in Sources */,
 				AA00001329A8B4E500123456 /* ClipboardItem.swift in Sources */,
@@ -451,7 +459,7 @@
 				CODE_SIGN_ENTITLEMENTS = OneClip/OneClip.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_ASSET_PATHS = "\"OneClip/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -462,7 +470,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.app;
 				PRODUCT_MODULE_NAME = OneClip;
 				PRODUCT_NAME = PasteLight;
@@ -479,7 +487,7 @@
 				CODE_SIGN_ENTITLEMENTS = OneClip/OneClip.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_ASSET_PATHS = "\"OneClip/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -490,7 +498,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.5;
+				MARKETING_VERSION = 1.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.oneclip.app;
 				PRODUCT_MODULE_NAME = OneClip;
 				PRODUCT_NAME = PasteLight;

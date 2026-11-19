@@ -12,6 +12,155 @@ import Testing
 
 struct OneClipTests {
 
+    @Test func screenshotSelectionNormalizesClampsAndRejectsTinyDrags() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 80)
+        #expect(ScreenshotGeometry.selection(from: CGPoint(x: 70, y: 60), to: CGPoint(x: 10, y: 20), in: bounds)
+                == CGRect(x: 10, y: 20, width: 60, height: 40))
+        #expect(ScreenshotGeometry.selection(from: CGPoint(x: -20, y: -10), to: CGPoint(x: 110, y: 90), in: bounds) == bounds)
+        #expect(ScreenshotGeometry.selection(from: .zero, to: CGPoint(x: 1, y: 50), in: bounds) == nil)
+        #expect(ScreenshotGeometry.selection(from: CGPoint(x: 120, y: 100), to: CGPoint(x: 140, y: 130), in: bounds) == nil)
+    }
+
+    @Test func screenshotCropUsesTopOriginAndActualPixelScale() {
+        let bounds = CGRect(x: -100, y: 20, width: 100, height: 80)
+        let region = CGRect(x: -90, y: 30, width: 20, height: 30)
+        #expect(ScreenshotGeometry.pixelRect(for: region, in: bounds, imageSize: CGSize(width: 200, height: 160))
+                == CGRect(x: 20, y: 80, width: 40, height: 60))
+        #expect(ScreenshotGeometry.pixelRect(for: region, in: bounds, imageSize: CGSize(width: 100, height: 160))
+                == CGRect(x: 10, y: 80, width: 20, height: 60))
+        #expect(ScreenshotGeometry.pixelRect(for: region, in: .zero, imageSize: CGSize(width: 200, height: 160)) == nil)
+    }
+
+    @Test func screenshotPNGEncodesCroppedPixelsWithoutFileURL() throws {
+        let context = try #require(CGContext(data: nil, width: 200, height: 160, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 200, height: 160))
+        let image = try #require(context.makeImage())
+        let rect = try #require(ScreenshotGeometry.pixelRect(for: CGRect(x: 10, y: 10, width: 20, height: 30),
+                                                             in: CGRect(x: 0, y: 0, width: 100, height: 80),
+                                                             imageSize: CGSize(width: 200, height: 160)))
+        let cropped = try #require(image.cropping(to: rect))
+        let data = try ScreenshotImageEncoder.png(cropped)
+        #expect(Array(data.prefix(8)) == [137, 80, 78, 71, 13, 10, 26, 10])
+        let metadata = try #require(ImageThumbnailDecoder.metadata(from: data))
+        #expect(metadata.pixelWidth == 40)
+        #expect(metadata.pixelHeight == 60)
+    }
+
+    @MainActor
+    @Test func screenshotPNGClipboardContainsOnlyImageData() throws {
+        let context = try #require(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let data = try ScreenshotImageEncoder.png(#require(context.makeImage()))
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        #expect(ClipboardWritePlan(values: [.data(data, .png)]).commit(to: pasteboard))
+        #expect(pasteboard.data(forType: .png) == data)
+        #expect(pasteboard.string(forType: .string) == nil)
+        #expect(pasteboard.data(forType: .fileURL) == nil)
+    }
+
+    @Test func screenshotShortcutIsIndependentAndIgnoresCapsLockForConflicts() {
+        #expect(GlobalShortcut.screenshotDefault.keyCode == 7)
+        #expect(GlobalShortcut.screenshotDefault.modifierFlags == [.command, .shift])
+        #expect(!GlobalShortcut.screenshotDefault.conflicts(with: GlobalShortcut()))
+        let withCapsLock = GlobalShortcut(keyCode: 7, modifierFlags:
+            GlobalShortcut.screenshotDefault.modifierFlags.union(.capsLock).rawValue)
+        #expect(withCapsLock.conflicts(with: .screenshotDefault))
+    }
+
+    @Test func screenshotSettingsDecodeLegacyAndRoundTripCustomShortcut() throws {
+        let encoder = JSONEncoder()
+        var json = try #require(JSONSerialization.jsonObject(with: encoder.encode(AppSettings())) as? [String: Any])
+        json.removeValue(forKey: "screenshotShortcutKeyCode")
+        json.removeValue(forKey: "screenshotShortcutModifierFlags")
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.screenshotShortcutKeyCode == nil)
+        #expect(legacy.screenshotShortcutModifierFlags == nil)
+        var custom = AppSettings()
+        custom.screenshotShortcutKeyCode = 8
+        custom.screenshotShortcutModifierFlags = NSEvent.ModifierFlags.command.union(.option).rawValue
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: encoder.encode(custom))
+        #expect(decoded.screenshotShortcutKeyCode == custom.screenshotShortcutKeyCode)
+        #expect(decoded.screenshotShortcutModifierFlags == custom.screenshotShortcutModifierFlags)
+    }
+
+    @MainActor
+    @Test func screenshotSelectionConfirmsOnReturnAndDoubleClickAndCancelsSafely() throws {
+        let context = try #require(CGContext(data: nil, width: 200, height: 200, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(context.makeImage())
+        let panel = ScreenshotSelectionPanel(contentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+                                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let view = ScreenshotSelectionView(image: image, size: CGSize(width: 100, height: 100))
+        panel.contentView = view
+        defer { panel.contentView = nil; panel.orderOut(nil) }
+        var confirmedSizes: [CGSize] = []
+        var cancellations = 0
+        view.onConfirm = { confirmedSizes.append(CGSize(width: $0.width, height: $0.height)) }
+        view.onCancel = { cancellations += 1 }
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, clicks: Int = 1) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [],
+                                            timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+                                            eventNumber: 0, clickCount: clicks, pressure: 1))
+        }
+        func key(_ code: UInt16) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                          windowNumber: panel.windowNumber, context: nil, characters: "",
+                                          charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+        }
+        panel.sendEvent(try key(36)) // No region must never create an image.
+        #expect(confirmedSizes.isEmpty)
+        view.mouseDown(with: try mouse(.leftMouseDown, 10, 10))
+        view.mouseDragged(with: try mouse(.leftMouseDragged, 60, 50))
+        view.mouseUp(with: try mouse(.leftMouseUp, 60, 50))
+        // First click of double-click must preserve the region.
+        view.mouseDown(with: try mouse(.leftMouseDown, 20, 20))
+        view.mouseUp(with: try mouse(.leftMouseUp, 20, 20))
+        view.mouseDown(with: try mouse(.leftMouseDown, 20, 20, clicks: 2))
+        panel.sendEvent(try key(36))
+        #expect(confirmedSizes == [CGSize(width: 100, height: 80), CGSize(width: 100, height: 80)])
+        panel.sendEvent(try key(53))
+        view.rightMouseDown(with: try mouse(.rightMouseDown, 20, 20))
+        #expect(cancellations == 2)
+        #expect(confirmedSizes.count == 2)
+    }
+
+    @MainActor
+    @Test func shortcutRecorderRejectsConflictAndEscapeCancels() throws {
+        let recorder = ShortcutRecorderNSView(frame: CGRect(x: 0, y: 0, width: 160, height: 36))
+        recorder.update(shortcut: .screenshotDefault)
+        var attempts = 0
+        recorder.onRecord = { _ in attempts += 1; return false }
+        let click = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        let conflict = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+            timestamp: 0, windowNumber: 0, context: nil, characters: "V", charactersIgnoringModifiers: "v",
+            isARepeat: false, keyCode: 9))
+        recorder.mouseDown(with: click)
+        recorder.keyDown(with: conflict)
+        #expect(attempts == 1)
+        #expect((recorder.subviews.first as? NSTextField)?.stringValue == GlobalShortcut.screenshotDefault.displayName)
+        recorder.mouseDown(with: click)
+        let escape = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+            isARepeat: false, keyCode: 53))
+        recorder.keyDown(with: escape)
+        recorder.keyDown(with: conflict)
+        #expect(attempts == 1)
+        let panel = NSPanel(contentRect: recorder.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.contentView = recorder
+        defer { panel.contentView = nil; panel.orderOut(nil) }
+        recorder.mouseDown(with: click)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: panel)
+        recorder.keyDown(with: conflict)
+        #expect(attempts == 1) // Switching to another app must end recording and restore hotkeys.
+    }
+
     @Test func clipboardResumePreservesPositionBeforeFiveMinutes() {
         var state = ClipboardListResumeState()
         let start = Date(timeIntervalSince1970: 1_000)

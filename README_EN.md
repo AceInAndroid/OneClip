@@ -39,6 +39,20 @@ PasteLight is not another always-open productivity dashboard. It stays quietly i
 - Favorites that are preserved during automatic cleanup.
 - Native context menu for copy, paste, favorite, search, and delete actions.
 
+## Lightweight Region Screenshots
+
+- Press `⌘⇧X` or choose the region screenshot action in the menu bar. Change the shortcut under Settings → Screenshot.
+- Drag to select a region, then press Return, double-click the selection, or click Copy. Escape, right-click, and Cancel leave the previous clipboard unchanged.
+- The cropped PNG is copied to the clipboard and added to history. Return to your application and press `⌘V` to paste it.
+- Select on any connected display; each selection stays within one display. This initial version focuses on region capture, without annotations, OCR, or video recording.
+- The settings page includes permission status and interaction guidance. Screen recording permission is requested only after an explicit action, never at startup.
+
+### Screen recording permission
+
+Choose Request Permission under Settings → Screenshot, then enable PasteLight in macOS System Settings → Privacy & Security → Screen & System Audio Recording (called Screen Recording on some macOS versions). Return to PasteLight and check again. If access has not taken effect, quit and reopen PasteLight.
+
+This permission is independent of Accessibility and is used for screenshots you initiate, without recording audio or video. Captures follow the existing image history, deduplication, and enabled WebDAV sync settings.
+
 ## Encrypted WebDAV Sync & Backup
 
 - Disabled by default. Choose **Encrypted Backup** or **Bidirectional Sync** under Settings → Sync & Backup.

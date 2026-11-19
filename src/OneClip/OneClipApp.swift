@@ -68,6 +68,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var statusBarRetryCount = 0
     private let maxStatusBarRetries = 3
     private var hotkeyManager: HotkeyManager?
+    private var isRecordingShortcut = false
     private var hasShownPermissionAlert = false
     private var isCheckingPermissions = false
     private var statusItemMonitorTimer: Timer?
@@ -138,6 +139,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         
         // 立即设置全局快捷键
         setupGlobalHotkey()
+
+        ScreenshotManager.shared.onWillCapture = { [weak self] in
+            self?.windowManager?.hideWindow()
+        }
+        ScreenshotManager.shared.configureShortcut(SettingsManager.shared.screenshotShortcut)
 
         // 快捷键不依赖辅助功能权限；权限仅用于“直接粘贴”。启动后独立检查并按需引导。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -586,6 +592,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
         toggleItem.toolTip = "快捷键: \(shortcut.displayName)"
         menu.addItem(toggleItem)
+
+        let screenshotShortcut = SettingsManager.shared.screenshotShortcut
+        let screenshotItem = NSMenuItem(title: "区域截图", action: #selector(startScreenshot),
+                                        keyEquivalent: screenshotShortcut.menuKeyEquivalent)
+        screenshotItem.target = self
+        screenshotItem.keyEquivalentModifierMask = screenshotShortcut.modifierFlags
+        screenshotItem.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "区域截图")
+        screenshotItem.toolTip = "\(screenshotShortcut.displayName) · 拖动框选，回车复制，Esc 取消"
+        menu.addItem(screenshotItem)
         
         // 快速粘贴功能已删除
         
@@ -674,6 +689,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
     
+    @objc private func startScreenshot() {
+        // NSMenu's tracking loop must end before presenting a permission alert or capture overlay.
+        DispatchQueue.main.async { ScreenshotManager.shared.startCapture() }
+    }
+
     private func menuTitle(for item: ClipboardItem) -> String {
         let imageData = item.type == .image
             ? ImageThumbnailDecoder.imageData(for: item)
@@ -1057,7 +1077,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 self.updateStatusBarMenu()
             }
         } else {
-            NSApp.setActivationPolicy(.regular)
+            NSApp.setActivationPolicy(SettingsManager.shared.showInDock ? .regular : .accessory)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 if let windowManager = self.windowManager {
@@ -1553,6 +1573,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         // Carbon 全局热键不依赖辅助功能权限，立即注册即可。
         DispatchQueue.main.async {
+            guard !self.isRecordingShortcut else { return }
             print("[DEBUG] 在主线程中创建 HotkeyManager 实例")
             self.hotkeyManager = HotkeyManager()
 
@@ -1963,6 +1984,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     
     // MARK: - 设置监听器
     private func setupSettingsObservers() {
+        NotificationCenter.default.publisher(for: .shortcutRecordingChanged)
+            .sink { [weak self] notification in
+                guard let self, let recording = notification.object as? Bool else { return }
+                // Recorder notifications originate on the main thread. Remove Carbon hotkeys
+                // immediately so recording an existing shortcut doesn't launch its action.
+                self.isRecordingShortcut = recording
+                if recording { self.hotkeyManager = nil }
+                else { self.setupGlobalHotkey() }
+                MainActor.assumeIsolated {
+                    ScreenshotManager.shared.setShortcutRecording(recording)
+                }
+            }
+            .store(in: &cancellables)
         let settings = SettingsManager.shared
         
         // 直接监听设置变化而不使用FeatureManager
@@ -1987,6 +2021,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
             .sink { [weak self] _, _ in
                 self?.setupGlobalHotkey()
+                DispatchQueue.main.async {
+                    ScreenshotManager.shared.configureShortcut(SettingsManager.shared.screenshotShortcut)
+                }
+                self?.updateStatusBarMenu()
+            }
+            .store(in: &cancellables)
+
+        settings.$screenshotShortcut
+            .dropFirst()
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
+            .sink { [weak self] shortcut in
+                DispatchQueue.main.async { ScreenshotManager.shared.configureShortcut(shortcut) }
                 self?.updateStatusBarMenu()
             }
             .store(in: &cancellables)
@@ -2456,6 +2502,10 @@ struct OneClipApp: App {
                     )
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+
+            CommandGroup(after: .pasteboard) {
+                Button("区域截图") { ScreenshotManager.shared.startCapture() }
             }
         }
 

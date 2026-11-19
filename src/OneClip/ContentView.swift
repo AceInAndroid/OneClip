@@ -3395,6 +3395,12 @@ struct SettingsView: View {
                     ) { selectedTab = 4 }
                     
                     ModernSidebarButton(
+                        title: "截图",
+                        icon: "viewfinder",
+                        isSelected: selectedTab == 7
+                    ) { selectedTab = 7 }
+
+                    ModernSidebarButton(
                         title: "同步与备份",
                         icon: "arrow.triangle.2.circlepath.icloud",
                         isSelected: selectedTab == 5
@@ -3592,6 +3598,7 @@ struct SettingsView: View {
         case 4: return "快捷键配置"
         case 5: return "同步与备份"
         case 6: return "关于 PasteLight"
+        case 7: return "截图设置"
         default: return "设置"
         }
     }
@@ -3607,6 +3614,7 @@ struct SettingsView: View {
         case 4: shortcutSettingsView()
         case 5: advancedSettingsView()
         case 6: aboutView()
+        case 7: ScreenshotSettingsView()
         default: generalSettingsView()
         }
     }
@@ -3908,8 +3916,13 @@ Slider(value: $settingsManager.monitoringInterval, in: 0.1...2.0, step: 0.1)
                         }
                         .buttonStyle(.bordered)
                     }
+                    if let message = settingsManager.shortcutConflictMessage {
+                        Text(message).font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
+
+            ScreenshotShortcutSettingsCard()
             
             // 应用内快捷键
             ModernSettingsCard(title: "应用内快捷键", icon: "keyboard.fill", color: .blue) {
@@ -4391,7 +4404,7 @@ struct KeyboardKey: View {
 
 struct ShortcutRecorder: NSViewRepresentable {
     let shortcut: GlobalShortcut
-    let onRecord: (GlobalShortcut) -> Void
+    let onRecord: (GlobalShortcut) -> Bool
 
     func makeNSView(context: Context) -> ShortcutRecorderNSView {
         let view = ShortcutRecorderNSView()
@@ -4407,11 +4420,12 @@ struct ShortcutRecorder: NSViewRepresentable {
 }
 
 final class ShortcutRecorderNSView: NSView {
-    var onRecord: ((GlobalShortcut) -> Void)?
+    var onRecord: ((GlobalShortcut) -> Bool)?
 
     private let label = NSTextField(labelWithString: "")
     private var shortcut = GlobalShortcut()
     private var isRecording = false
+    private var windowResignObserver: NSObjectProtocol?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -4438,8 +4452,7 @@ final class ShortcutRecorderNSView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        isRecording = true
-        updateAppearance()
+        setRecording(true)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -4455,9 +4468,35 @@ final class ShortcutRecorderNSView: NSView {
     }
 
     override func resignFirstResponder() -> Bool {
-        isRecording = false
-        updateAppearance()
+        setRecording(false)
         return super.resignFirstResponder()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { setRecording(false) }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observer = windowResignObserver { NotificationCenter.default.removeObserver(observer) }
+        windowResignObserver = nil
+        if let window {
+            windowResignObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.setRecording(false) }
+        }
+    }
+
+    deinit {
+        if let observer = windowResignObserver { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private func setRecording(_ value: Bool) {
+        guard isRecording != value else { return }
+        isRecording = value
+        NotificationCenter.default.post(name: .shortcutRecordingChanged, object: value)
+        updateAppearance()
     }
 
     func update(shortcut: GlobalShortcut) {
@@ -4468,6 +4507,11 @@ final class ShortcutRecorderNSView: NSView {
     }
 
     private func record(_ event: NSEvent) {
+        guard isRecording else { return }
+        if event.keyCode == 53 {
+            setRecording(false)
+            return
+        }
         let modifierMask: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
         let modifiers = event.modifierFlags.intersection(modifierMask)
 
@@ -4479,9 +4523,8 @@ final class ShortcutRecorderNSView: NSView {
         }
 
         let shortcut = GlobalShortcut(keyCode: event.keyCode, modifierFlags: modifiers.rawValue)
-        isRecording = false
-        onRecord?(shortcut)
-        update(shortcut: shortcut)
+        if onRecord?(shortcut) == true { self.shortcut = shortcut }
+        setRecording(false)
     }
 
     private func updateAppearance() {
