@@ -33,8 +33,14 @@ SCScreenshotManager supports the existing macOS 14 deployment target.
   clipboard: no file URL or path text. The existing image ingestion path handles
   history, deduplication, persistence, and configured sync. The existing 50 MB
   image import limit applies.
-- Return, double-click, or Copy confirms; Escape, right-click, or Cancel aborts.
-  Selections cannot span displays. There is no editor, OCR, or screen recording.
+- After selecting a region, a floating Liquid Glass toolbar offers rectangle,
+  ellipse, arrow, pen, and sequential numbered badges, four colors, and three line
+  weights. macOS 26 uses native glass; earlier supported systems use material.
+- Return or the checkmark confirms; double-click confirms only in the selection
+  tool. Escape, right-click, or Cancel aborts. ⌘Z undoes and ⇧⌘Z redoes. Reframing
+  clears annotations. Selection remains confined to one display; no OCR or recording.
+- Undo stores bounded vector commands rather than bitmap snapshots. Markup is
+  clipped and rendered into the crop at native resolution, excluding overlay UI.
 - Selection panels explicitly disable NSPanel's default hide-on-deactivation
   behavior. A repeated capture action brings the existing selection back to the
   front, rather than ignoring the action while an invisible session remains busy.

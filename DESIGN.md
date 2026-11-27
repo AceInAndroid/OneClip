@@ -58,3 +58,12 @@
 - The source artwork is solid black with transparency and `isTemplate = true`; macOS supplies white on dark menu bars, black on light menu bars, and the correct pressed/disabled treatment.
 - The icon contains no background plate, accent color, shadow, badge, or filled circle. Its visible bounds retain roughly two points of breathing room to avoid crowding adjacent status items.
 - The fallback remains a native monochrome clipboard symbol and must also be configured as a template image.
+
+## Screenshot markup
+
+- Keep region capture lightweight: the selection opens a two-row floating toolbar, 336 × 120 points, with a continuous 24-point corner radius. Prefer below the selection, flip above when needed, and clamp to the display bounds.
+- Follow the iOS 26 Liquid Glass direction with a distinct floating control layer, native SF Symbols, translucent depth, and one blue selected-tool pill. On macOS 26 use the native regular glass effect; macOS 14–15 use ultra-thin material with a subtle rim. Do not animate the full screenshot or selection while drawing.
+- First row: selection, rectangle, ellipse, arrow, freehand pen, and numbered badges. Keep small visible labels alongside icons. The selection tool preserves double-click-to-copy; double clicks in annotation tools must never accidentally finish capture.
+- Second row: coral red (default), blue, yellow, and white; three line weights (3/5/8 points); undo, redo, cancel, and a blue confirm action. Show tooltips and accessibility labels; selected colors and tools have non-color selection indicators. Undo/redo expose disabled states and support ⌘Z / ⇧⌘Z.
+- Marks are clipped to the chosen region. Numbers advance automatically from 1; undo restores the next number, and a new mark discards redo history. Reframing the region clears its marks; switching drawing tools retains them. Escape, right click, and cancel preserve the existing clipboard.
+- Store bounded vector commands, not bitmap undo snapshots (500 marks, 8,192 sampled points per pen stroke). Render vectors into the final crop at the original pixel scale. The toolbar, dimming, selection border, and hints must never be included in the exported PNG.

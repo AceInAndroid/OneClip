@@ -232,7 +232,7 @@ final class ScreenshotManager: NSObject, ObservableObject {
         }
         ScreenshotSelectionPanel.present(panels)
         Logger.shared.info("截图框选窗口已显示")
-        statusMessage = "拖动框选，回车或双击选区复制；Esc / 右键取消。"
+        statusMessage = "拖动框选后可添加标注，回车复制；Esc / 右键取消。"
     }
 
     private func complete(_ image: CGImage) {
@@ -359,12 +359,224 @@ final class ScreenshotSelectionPanel: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         // Keep confirmation/cancellation available even when a toolbar button has focus.
-        if event.type == .keyDown, [UInt16(36), 76, 53].contains(event.keyCode),
+        if event.type == .keyDown,
+           ([UInt16(36), 76, 53].contains(event.keyCode) ||
+            (event.modifierFlags.contains(.command) && event.keyCode == 6)),
            let selectionView = contentView as? ScreenshotSelectionView {
             selectionView.keyDown(with: event)
             return
         }
         super.sendEvent(event)
+    }
+}
+
+enum ScreenshotTool: String, CaseIterable {
+    case selection, rectangle, ellipse, arrow, pen, number
+
+    var title: String {
+        switch self {
+        case .selection: return "选区"
+        case .rectangle: return "矩形"
+        case .ellipse: return "圆形"
+        case .arrow: return "箭头"
+        case .pen: return "画笔"
+        case .number: return "序号"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .selection: return "viewfinder"
+        case .rectangle: return "rectangle"
+        case .ellipse: return "circle"
+        case .arrow: return "arrow.up.right"
+        case .pen: return "pencil.tip"
+        case .number: return "1.circle"
+        }
+    }
+}
+
+enum ScreenshotInk: String, CaseIterable {
+    case red, blue, yellow, white
+
+    var title: String {
+        switch self {
+        case .red: return "珊瑚红"
+        case .blue: return "蓝色"
+        case .yellow: return "黄色"
+        case .white: return "白色"
+        }
+    }
+
+    var color: NSColor {
+        switch self {
+        case .red: return NSColor(srgbRed: 1, green: 0.25, blue: 0.31, alpha: 1)
+        case .blue: return NSColor(srgbRed: 0.12, green: 0.55, blue: 1, alpha: 1)
+        case .yellow: return NSColor(srgbRed: 1, green: 0.8, blue: 0.12, alpha: 1)
+        case .white: return .white
+        }
+    }
+}
+
+struct ScreenshotAnnotation {
+    let tool: ScreenshotTool
+    let ink: ScreenshotInk
+    let lineWidth: CGFloat
+    var points: [CGPoint]
+    var number = 0
+
+    @MainActor
+    func draw() {
+        guard let start = points.first, let end = points.last else { return }
+        ink.color.setStroke()
+        ink.color.setFill()
+        let path = NSBezierPath()
+        path.lineWidth = lineWidth
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        let rect = CGRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                          width: abs(end.x - start.x), height: abs(end.y - start.y))
+        switch tool {
+        case .selection: return
+        case .rectangle: path.appendRoundedRect(rect, xRadius: 2, yRadius: 2)
+        case .ellipse: path.appendOval(in: rect)
+        case .arrow:
+            path.move(to: start)
+            path.line(to: end)
+            let angle = atan2(end.y - start.y, end.x - start.x)
+            let length = min(max(12, lineWidth * 4), hypot(end.x - start.x, end.y - start.y) * 0.45)
+            for offset in [-CGFloat.pi / 6, CGFloat.pi / 6] {
+                path.move(to: end)
+                path.line(to: CGPoint(x: end.x - cos(angle + offset) * length,
+                                     y: end.y - sin(angle + offset) * length))
+            }
+        case .pen:
+            path.move(to: start)
+            if points.count == 1 {
+                NSBezierPath(ovalIn: CGRect(x: start.x - lineWidth / 2, y: start.y - lineWidth / 2,
+                                            width: lineWidth, height: lineWidth)).fill()
+            }
+            for point in points.dropFirst() { path.line(to: point) }
+        case .number:
+            let text = "\(number)" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 15, weight: .bold),
+                .foregroundColor: ink == .white || ink == .yellow ? NSColor.black : NSColor.white
+            ]
+            let size = text.size(withAttributes: attributes)
+            let diameter = max(28, size.width + 12)
+            NSBezierPath(ovalIn: CGRect(x: start.x - diameter / 2, y: start.y - diameter / 2,
+                                        width: diameter, height: diameter)).fill()
+            text.draw(at: CGPoint(x: start.x - size.width / 2, y: start.y - size.height / 2), withAttributes: attributes)
+            return
+        }
+        path.stroke()
+    }
+}
+
+/// Vector commands only: undo does not retain full-resolution bitmap snapshots.
+@MainActor
+final class ScreenshotMarkupState: ObservableObject {
+    @Published var tool: ScreenshotTool = .selection
+    @Published var ink: ScreenshotInk = .red
+    @Published var lineWidth: CGFloat = 3
+    @Published private(set) var annotations: [ScreenshotAnnotation] = []
+    @Published private(set) var undone: [ScreenshotAnnotation] = []
+
+    var nextNumber: Int { (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1 }
+
+    func append(_ annotation: ScreenshotAnnotation) {
+        guard annotations.count < 500 else { return }
+        annotations.append(annotation)
+        undone.removeAll()
+    }
+
+    func undo() { if let last = annotations.popLast() { undone.append(last) } }
+    func redo() { if let last = undone.popLast() { annotations.append(last) } }
+    func clear() { annotations.removeAll(); undone.removeAll(); tool = .selection }
+}
+
+private struct ScreenshotMarkupToolbar: View {
+    @ObservedObject var state: ScreenshotMarkupState
+    var changed: () -> Void
+    var cancel: () -> Void
+    var confirm: () -> Void
+
+    var body: some View {
+        surface
+            .environment(\.colorScheme, .dark)
+            .shadow(color: .black.opacity(0.25), radius: 14, y: 5)
+    }
+
+    @ViewBuilder private var surface: some View {
+        if #available(macOS 26.0, *) {
+            controls.glassEffect(.regular, in: .rect(cornerRadius: 24))
+        } else {
+            controls.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 2) {
+                ForEach(ScreenshotTool.allCases, id: \.self) { tool in
+                    Button {
+                        state.tool = tool
+                        changed()
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: tool.symbol).font(.system(size: 17, weight: .medium))
+                            Text(tool.title).font(.system(size: 10, weight: .medium))
+                        }
+                        .frame(width: 48, height: 48)
+                        .foregroundStyle(state.tool == tool ? Color.white : Color.white.opacity(0.8))
+                        .background(state.tool == tool ? Color.blue.opacity(0.65) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: 15))
+                    }
+                    .help(tool == .selection ? "重新框选（会清除标注）" : tool.title)
+                    .accessibilityLabel(tool.title)
+                    .accessibilityAddTraits(state.tool == tool ? .isSelected : [])
+                }
+            }
+            Rectangle().fill(.white.opacity(0.14)).frame(height: 0.5)
+            HStack(spacing: 9) {
+                ForEach(ScreenshotInk.allCases, id: \.self) { ink in
+                    Button { state.ink = ink; changed() } label: {
+                        Circle().fill(Color(nsColor: ink.color)).frame(width: 16, height: 16)
+                            .padding(3)
+                            .overlay(Circle().strokeBorder(state.ink == ink ? .white : .clear, lineWidth: 1.5))
+                    }
+                    .help(ink.title).accessibilityLabel(ink.title)
+                    .accessibilityAddTraits(state.ink == ink ? .isSelected : [])
+                }
+                Button {
+                    state.lineWidth = state.lineWidth == 3 ? 5 : state.lineWidth == 5 ? 8 : 3
+                    changed()
+                } label: {
+                    Image(systemName: "lineweight").frame(width: 22, height: 26)
+                }
+                .help("线条粗细：\(Int(state.lineWidth))，点击切换")
+                .accessibilityLabel("线条粗细 \(Int(state.lineWidth))")
+                Button { state.undo(); changed() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .disabled(state.annotations.isEmpty).help("撤销 ⌘Z").accessibilityLabel("撤销")
+                Button { state.redo(); changed() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .disabled(state.undone.isEmpty).help("重做 ⇧⌘Z").accessibilityLabel("重做")
+                Spacer(minLength: 0)
+                Button(action: cancel) { Image(systemName: "xmark").frame(width: 22, height: 28) }
+                    .help("取消 Esc").accessibilityLabel("取消截图")
+                Button(action: confirm) {
+                    Image(systemName: "checkmark").font(.system(size: 13, weight: .bold))
+                        .frame(width: 32, height: 28).background(Color.blue, in: Capsule())
+                }
+                .help("复制 ↵").accessibilityLabel("复制截图")
+            }
+            .font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .frame(width: 336)
     }
 }
 
@@ -376,7 +588,10 @@ final class ScreenshotSelectionView: NSView {
     private let backdrop: NSImage
     private var dragStart: CGPoint?
     private var selection: CGRect?
-    private let toolbar = NSVisualEffectView()
+    let markup = ScreenshotMarkupState()
+    private var draft: ScreenshotAnnotation?
+    private var annotationStart: CGPoint?
+    private var toolbar: NSHostingView<ScreenshotMarkupToolbar>!
     private let hint = NSTextField(labelWithString: "拖动框选区域 · 回车或双击选区复制 · Esc / 右键取消")
 
     init(image: CGImage, size: CGSize) {
@@ -384,22 +599,17 @@ final class ScreenshotSelectionView: NSView {
         backdrop = NSImage(cgImage: image, size: size)
         super.init(frame: CGRect(origin: .zero, size: size))
         setAccessibilityLabel("区域截图，拖动选择区域，回车确认，Escape 取消")
-        toolbar.material = .hudWindow
-        toolbar.blendingMode = .withinWindow
-        toolbar.state = .active
-        toolbar.wantsLayer = true
-        toolbar.layer?.cornerRadius = 14
-        toolbar.layer?.masksToBounds = true
+        toolbar = NSHostingView(rootView: ScreenshotMarkupToolbar(state: markup, changed: { [weak self] in
+            guard let self else { return }
+            self.draft = nil
+            self.annotationStart = nil
+            self.needsDisplay = true
+            self.hint.stringValue = self.markup.tool == .selection
+                ? "拖动重新框选 · 双击 / 回车复制 · Esc 取消"
+                : "\(self.markup.tool.title) · \(self.markup.tool == .number ? "点击添加连续序号" : "在选区内拖动绘制") · ⌘Z 撤销 · 回车复制"
+            self.window?.makeFirstResponder(self)
+        }, cancel: { [weak self] in self?.cancelSelection() }, confirm: { [weak self] in self?.confirmSelection() }))
         toolbar.isHidden = true
-        let cancel = NSButton(title: "取消 Esc", target: self, action: #selector(cancelSelection))
-        let confirm = NSButton(title: "复制 ↵", target: self, action: #selector(confirmSelection))
-        cancel.bezelStyle = .rounded
-        confirm.bezelStyle = .rounded
-        confirm.contentTintColor = .controlAccentColor
-        cancel.frame = NSRect(x: 10, y: 8, width: 84, height: 28)
-        confirm.frame = NSRect(x: 100, y: 8, width: 84, height: 28)
-        toolbar.addSubview(cancel)
-        toolbar.addSubview(confirm)
         addSubview(toolbar)
         hint.textColor = .white
         hint.font = .systemFont(ofSize: 13, weight: .medium)
@@ -418,6 +628,13 @@ final class ScreenshotSelectionView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         backdrop.draw(in: bounds)
+        if let selection {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: selection).addClip()
+            for annotation in markup.annotations { annotation.draw() }
+            draft?.draw()
+            NSGraphicsContext.restoreGraphicsState()
+        }
         let shade = NSBezierPath(rect: bounds)
         if let selection { shade.appendRect(selection) }
         shade.windingRule = .evenOdd
@@ -438,24 +655,72 @@ final class ScreenshotSelectionView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if markup.tool != .selection, let selection {
+            guard selection.contains(point), markup.annotations.count < 500 else { return }
+            window?.makeFirstResponder(self)
+            if markup.tool == .number {
+                markup.append(ScreenshotAnnotation(tool: .number, ink: markup.ink, lineWidth: markup.lineWidth,
+                                                   points: [point], number: markup.nextNumber))
+            } else {
+                annotationStart = point
+                draft = ScreenshotAnnotation(tool: markup.tool, ink: markup.ink,
+                                             lineWidth: markup.lineWidth, points: [point])
+            }
+            needsDisplay = true
+            return
+        }
         if event.clickCount == 2, selection?.contains(point) == true {
             confirmSelection()
             return
         }
         onSelect?()
         window?.makeFirstResponder(self)
-        dragStart = point
         // Preserve an existing selection through the first click of a double click.
         if selection?.contains(point) != true { clearSelection() }
+        dragStart = point
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if annotationStart != nil, draft != nil, let selection {
+            let point = convert(event.locationInWindow, from: nil)
+            let clipped = CGPoint(x: min(max(point.x, selection.minX), selection.maxX),
+                                  y: min(max(point.y, selection.minY), selection.maxY))
+            if draft?.tool == .pen {
+                if let last = draft?.points.last, hypot(clipped.x - last.x, clipped.y - last.y) >= 0.8 {
+                    // Bound memory even during unusually long pointer drags.
+                    if let points = draft?.points, points.count >= 8192 {
+                        draft?.points = points.enumerated().compactMap { $0.offset.isMultiple(of: 2) ? $0.element : nil }
+                    }
+                    draft?.points.append(clipped)
+                }
+            } else if let start = draft?.points.first {
+                draft?.points = [start, clipped]
+            }
+            needsDisplay = true
+            return
+        }
         guard let start = dragStart else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        if hypot(point.x - start.x, point.y - start.y) >= 2 {
+            markup.clear()
+            toolbar.isHidden = true
+        }
         selection = ScreenshotGeometry.selection(from: start, to: convert(event.locationInWindow, from: nil), in: bounds)
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
+        if annotationStart != nil {
+            mouseDragged(with: event)
+            if let draft, draft.tool == .pen || (draft.points.count > 1 &&
+                hypot(draft.points.last!.x - draft.points[0].x, draft.points.last!.y - draft.points[0].y) >= 2) {
+                markup.append(draft)
+            }
+            draft = nil
+            annotationStart = nil
+            needsDisplay = true
+            return
+        }
         guard let start = dragStart else { return }
         let end = convert(event.locationInWindow, from: nil)
         if selection?.contains(end) == true, abs(end.x - start.x) < 2, abs(end.y - start.y) < 2 {
@@ -465,8 +730,8 @@ final class ScreenshotSelectionView: NSView {
         mouseDragged(with: event)
         dragStart = nil
         guard let selection else { return }
-        let width: CGFloat = 194
-        let height: CGFloat = 44
+        let width: CGFloat = 336
+        let height: CGFloat = 120
         let y = selection.minY >= height + 10 ? selection.minY - height - 10 : selection.maxY + 10
         toolbar.frame = NSRect(x: max(8, min(bounds.maxX - width - 8, selection.maxX - width)),
                                y: max(8, min(bounds.maxY - height - 8, y)), width: width, height: height)
@@ -477,6 +742,13 @@ final class ScreenshotSelectionView: NSView {
     override func rightMouseDown(with event: NSEvent) { onCancel?() }
 
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), event.keyCode == 6 {
+            draft = nil
+            annotationStart = nil
+            if event.modifierFlags.contains(.shift) { markup.redo() } else { markup.undo() }
+            needsDisplay = true
+            return
+        }
         switch event.keyCode {
         case 53: onCancel?()
         case 36, 76: confirmSelection()
@@ -486,6 +758,11 @@ final class ScreenshotSelectionView: NSView {
 
     func clearSelection() {
         selection = nil
+        dragStart = nil
+        draft = nil
+        annotationStart = nil
+        markup.clear()
+        hint.stringValue = "拖动框选区域 · 回车或双击选区复制 · Esc / 右键取消"
         toolbar.isHidden = true
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
@@ -494,10 +771,32 @@ final class ScreenshotSelectionView: NSView {
     @objc private func cancelSelection() { onCancel?() }
 
     @objc private func confirmSelection() {
+        guard draft == nil, let result = renderedSelection() else { return }
+        onConfirm?(result)
+    }
+
+    /// Render annotations at native capture resolution, excluding all overlay UI.
+    func renderedSelection() -> CGImage? {
         guard let selection,
               let rect = ScreenshotGeometry.pixelRect(for: selection, in: bounds,
                                                        imageSize: CGSize(width: image.width, height: image.height)),
-              let cropped = image.cropping(to: rect) else { return }
-        onConfirm?(cropped)
+              let cropped = image.cropping(to: rect) else { return nil }
+        guard !markup.annotations.isEmpty else { return cropped }
+        guard let context = CGContext(data: nil, width: cropped.width, height: cropped.height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
+        let scaleX = CGFloat(image.width) / bounds.width
+        let scaleY = CGFloat(image.height) / bounds.height
+        context.scaleBy(x: scaleX, y: scaleY)
+        context.translateBy(x: -bounds.minX - rect.minX / scaleX,
+                            y: -bounds.minY - (CGFloat(image.height) - rect.maxY) / scaleY)
+        context.clip(to: selection)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        for annotation in markup.annotations { annotation.draw() }
+        NSGraphicsContext.restoreGraphicsState()
+        return context.makeImage()
     }
 }

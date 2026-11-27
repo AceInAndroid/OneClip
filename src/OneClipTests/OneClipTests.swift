@@ -12,6 +12,136 @@ import Testing
 
 struct OneClipTests {
 
+    @MainActor
+    private func markupFixture(size: CGSize = CGSize(width: 900, height: 640)) throws -> (ScreenshotSelectionView, ScreenshotSelectionPanel) {
+        let context = try #require(CGContext(data: nil, width: Int(size.width * 2), height: Int(size.height * 2),
+                                             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.9, green: 0.93, blue: 0.97, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: CGSize(width: size.width * 2, height: size.height * 2)))
+        let view = ScreenshotSelectionView(image: try #require(context.makeImage()), size: size)
+        let panel = ScreenshotSelectionPanel.make(frame: CGRect(origin: .zero, size: size))
+        panel.contentView = view
+        return (view, panel)
+    }
+
+    @MainActor
+    private func markupMouse(_ view: ScreenshotSelectionView, _ type: NSEvent.EventType,
+                             _ x: CGFloat, _ y: CGFloat, clicks: Int = 1) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(with: type, location: view.convert(CGPoint(x: x, y: y), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: view.window?.windowNumber ?? 0,
+            context: nil, eventNumber: 0, clickCount: clicks, pressure: 1))
+    }
+
+    @MainActor
+    private func markupDrag(_ view: ScreenshotSelectionView, from start: CGPoint, to end: CGPoint) throws {
+        view.mouseDown(with: try markupMouse(view, .leftMouseDown, start.x, start.y))
+        view.mouseDragged(with: try markupMouse(view, .leftMouseDragged, end.x, end.y))
+        view.mouseUp(with: try markupMouse(view, .leftMouseUp, end.x, end.y))
+    }
+
+    @MainActor
+    @Test func screenshotMarkupToolsPreserveSelectionAndRenderAtRetinaScale() throws {
+        for tool in ScreenshotTool.allCases where tool != .selection {
+            let (view, panel) = try markupFixture()
+            defer { panel.contentView = nil; panel.orderOut(nil) }
+            try markupDrag(view, from: CGPoint(x: 60, y: 200), to: CGPoint(x: 820, y: 570))
+            let original = try ScreenshotImageEncoder.png(#require(view.renderedSelection()))
+            view.markup.tool = tool
+            try markupDrag(view, from: CGPoint(x: 120, y: 300), to: CGPoint(x: 240, y: 420))
+            #expect(view.markup.annotations.count == 1)
+            let exported = try #require(view.renderedSelection())
+            #expect(exported.width == 1520)
+            #expect(exported.height == 740)
+            #expect(try ScreenshotImageEncoder.png(exported) != original)
+            view.markup.undo()
+            #expect(try ScreenshotImageEncoder.png(#require(view.renderedSelection())) == original)
+            view.markup.redo()
+            #expect(try ScreenshotImageEncoder.png(#require(view.renderedSelection())) != original)
+        }
+    }
+
+    @MainActor
+    @Test func screenshotMarkupNumbersUndoRedoAndReselectionAreConsistent() throws {
+        let (view, panel) = try markupFixture()
+        defer { panel.contentView = nil; panel.orderOut(nil) }
+        try markupDrag(view, from: CGPoint(x: 60, y: 200), to: CGPoint(x: 820, y: 570))
+        view.markup.tool = .number
+        for x: CGFloat in [120, 160, 200, 240] {
+            view.mouseDown(with: try markupMouse(view, .leftMouseDown, x, 300))
+            view.mouseUp(with: try markupMouse(view, .leftMouseUp, x, 300))
+        }
+        #expect(view.markup.annotations.map(\.number) == [1, 2, 3, 4])
+        #expect(view.markup.nextNumber == 5)
+        let undo = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+            timestamp: 0, windowNumber: panel.windowNumber, context: nil, characters: "z",
+            charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
+        panel.sendEvent(undo)
+        #expect(view.markup.nextNumber == 4)
+        view.mouseDown(with: try markupMouse(view, .leftMouseDown, 280, 300, clicks: 2))
+        #expect(view.markup.annotations.map(\.number) == [1, 2, 3, 4])
+        #expect(view.markup.undone.isEmpty)
+        // A double click in a drawing tool adds markup and must not confirm a screenshot.
+        var confirmations = 0
+        view.onConfirm = { _ in confirmations += 1 }
+        view.mouseDown(with: try markupMouse(view, .leftMouseDown, 300, 300, clicks: 2))
+        #expect(confirmations == 0)
+        view.markup.tool = .selection
+        try markupDrag(view, from: CGPoint(x: 80, y: 240), to: CGPoint(x: 500, y: 500))
+        #expect(view.markup.annotations.isEmpty)
+        #expect(view.markup.nextNumber == 1)
+        #expect(try #require(view.renderedSelection()).width == 840)
+    }
+
+    @MainActor
+    @Test func screenshotMarkupClipsDragsAndExportsCorrectCoordinates() throws {
+        let (view, panel) = try markupFixture()
+        defer { panel.contentView = nil; panel.orderOut(nil) }
+        try markupDrag(view, from: CGPoint(x: 60, y: 200), to: CGPoint(x: 820, y: 570))
+        view.markup.tool = .pen
+        view.markup.ink = .red
+        view.markup.lineWidth = 8
+        try markupDrag(view, from: CGPoint(x: 100, y: 250), to: CGPoint(x: 1000, y: 250))
+        #expect(view.markup.annotations.first?.points.last == CGPoint(x: 820, y: 250))
+        view.mouseDown(with: try markupMouse(view, .leftMouseDown, 5, 5))
+        #expect(view.markup.annotations.count == 1)
+        let image = try #require(view.renderedSelection())
+        let pixels = NSBitmapImageRep(cgImage: image)
+        // AppKit y=250 is 100 pixels above the cropped bottom, not 100 below its top.
+        let marked = try #require(pixels.colorAt(x: 200, y: image.height - 100)?.usingColorSpace(.sRGB))
+        let clear = try #require(pixels.colorAt(x: 200, y: 100)?.usingColorSpace(.sRGB))
+        #expect(marked.redComponent > 0.9 && marked.greenComponent < 0.4)
+        #expect(clear.greenComponent > 0.8)
+    }
+
+    @MainActor
+    @Test func screenshotMarkupVisualFixture() throws {
+        let (view, panel) = try markupFixture()
+        defer { panel.contentView = nil; panel.orderOut(nil) }
+        try markupDrag(view, from: CGPoint(x: 60, y: 200), to: CGPoint(x: 820, y: 570))
+        for (tool, start, end) in [
+            (ScreenshotTool.rectangle, CGPoint(x: 110, y: 420), CGPoint(x: 280, y: 510)),
+            (.ellipse, CGPoint(x: 340, y: 420), CGPoint(x: 490, y: 510)),
+            (.arrow, CGPoint(x: 550, y: 450), CGPoint(x: 700, y: 510)),
+            (.pen, CGPoint(x: 140, y: 340), CGPoint(x: 260, y: 370))
+        ] {
+            view.markup.tool = tool
+            try markupDrag(view, from: start, to: end)
+        }
+        view.markup.tool = .number
+        for x: CGFloat in [350, 410, 470, 530] {
+            view.mouseDown(with: try markupMouse(view, .leftMouseDown, x, 340))
+        }
+        view.layoutSubtreeIfNeeded()
+        view.displayIfNeeded()
+        let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let preview = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("PasteLight-markup-preview.png")
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: preview)
+        print("Markup preview: \(preview.path)")
+        #expect(view.markup.annotations.count == 8)
+    }
+
     @Test func screenshotSelectionNormalizesClampsAndRejectsTinyDrags() {
         let bounds = CGRect(x: 0, y: 0, width: 100, height: 80)
         #expect(ScreenshotGeometry.selection(from: CGPoint(x: 70, y: 60), to: CGPoint(x: 10, y: 20), in: bounds)
